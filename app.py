@@ -256,12 +256,35 @@ def download_all_prices(
     return prices, sorted(set(failures))
 
 
+
+def calculate_rsi(close, period=14):
+    """Calculate Wilder's RSI."""
+    delta = close.diff()
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
+
+    avg_gain = gains.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period,
+    ).mean()
+
+    avg_loss = losses.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period,
+    ).mean()
+
+    rs = avg_gain / avg_loss.replace(0, 1e-12)
+    return 100 - (100 / (1 + rs))
+
 def scan_prices(
     universe,
     prices,
     ema_period,
     touch_mode,
     tolerance_pct,
+    rsi_period,
 ):
     """Calculate EMA and retain the latest qualifying touch per stock."""
 
@@ -275,6 +298,8 @@ def scan_prices(
                 "Occurrence Date",
                 "Close",
                 f"EMA {ema_period}",
+                f"RSI {rsi_period}",
+                "RSI Zone",
                 "Distance from EMA %",
             ]
         )
@@ -307,6 +332,11 @@ def scan_prices(
             adjust=False,
             min_periods=ema_period,
         ).mean()
+
+        frame["RSI"] = calculate_rsi(
+            frame["Close"],
+            period=rsi_period,
+        )
 
         # Keep previous values in THIS DataFrame.
         frame["Previous Close"] = frame["Close"].shift(1)
@@ -365,6 +395,21 @@ def scan_prices(
         else:
             signal_type = "Touch"
 
+        rsi_value = (
+            float(hit["RSI"])
+            if pd.notna(hit["RSI"])
+            else None
+        )
+
+        if rsi_value is None:
+            rsi_zone = "N/A"
+        elif rsi_value >= 70:
+            rsi_zone = "Overbought"
+        elif rsi_value <= 30:
+            rsi_zone = "Oversold"
+        else:
+            rsi_zone = "Neutral"
+
         metadata = company_lookup.get(
             ticker,
             {
@@ -381,6 +426,8 @@ def scan_prices(
                 "Occurrence Date": hit["Date"],
                 "Close": float(hit["Close"]),
                 f"EMA {ema_period}": float(hit["EMA"]),
+                f"RSI {rsi_period}": rsi_value,
+                "RSI Zone": rsi_zone,
                 "Distance from EMA %": (
                     (
                         float(hit["Close"])
@@ -427,6 +474,9 @@ def scan_prices(
     output[f"EMA {ema_period}"] = (
         output[f"EMA {ema_period}"].round(2)
     )
+    output[f"RSI {rsi_period}"] = (
+        output[f"RSI {rsi_period}"].round(2)
+    )
     output["Distance from EMA %"] = (
         output["Distance from EMA %"].round(2)
     )
@@ -462,6 +512,14 @@ with st.sidebar:
         min_value=2,
         max_value=8,
         value=4,
+    )
+
+    rsi_period = st.number_input(
+        "RSI period",
+        min_value=2,
+        max_value=100,
+        value=14,
+        step=1,
     )
 
     touch_label = st.radio(
@@ -574,6 +632,7 @@ if run_scan:
                 ema_period=int(ema_period),
                 touch_mode=touch_mode,
                 tolerance_pct=float(tolerance_pct),
+                rsi_period=int(rsi_period),
             )
 
         st.session_state["signals"] = signals
@@ -587,6 +646,7 @@ if run_scan:
             "scan_date": date.today().isoformat(),
             "touch_label": touch_label,
             "history_years": history_years,
+            "rsi_period": int(rsi_period),
         }
 
         progress_bar.empty()
@@ -627,6 +687,7 @@ with st.expander("Scan details"):
             "Stocks with price data": meta["downloaded"],
             "Failed tickers": len(meta["failures"]),
             "EMA period": current_ema,
+            "RSI period": meta["rsi_period"],
             "Signal definition": meta["touch_label"],
             "History downloaded": (
                 f"{meta['history_years']} years"
@@ -756,6 +817,9 @@ with st.expander("Signal methodology"):
 **Universe:** Current Nifty 500 constituents.
 
 **EMA:** EMA calculated using **{current_ema}** daily closing prices.
+
+**RSI:** Wilder's RSI using the selected period. RSI >= 70 is **Overbought**,
+RSI <= 30 is **Oversold**, otherwise it is **Neutral**.
 
 **Wick touch:** `Low ≤ EMA ≤ High`
 
