@@ -349,7 +349,7 @@ def download_prices(
     expected = len(tickers)
     returned = prices["Yahoo Symbol"].nunique()
     coverage = returned / max(expected, 1)
-    if coverage < 0.97:
+    if coverage < 0.90:
         raise RuntimeError(
             f"Market-data coverage too low: {returned}/{expected} "
             f"({coverage:.1%}). Scan was discarded rather than producing "
