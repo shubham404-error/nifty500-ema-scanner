@@ -587,34 +587,11 @@ def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
             series = pd.Series(series, index=df.index)
         df[name] = series.fillna(False).astype(bool)
 
-    rsi_cols = [col for col in df.columns if re.match(r"^RSI\d+$", str(col))]
+    rsi_cols = [col for col in df.columns if re.match(r"^RSI\\d+$", str(col))]
     rsi = (
         pd.to_numeric(df[rsi_cols[0]], errors="coerce")
         if rsi_cols
         else pd.Series(float("nan"), index=df.index)
-    )
-
-    # Baseline fields are retained for compatibility with existing pages.
-    df["RegimeScore"] = df["BullRegime"].astype(int) * 25
-    df["MomentumScore"] = (
-        df["BullMomentum"].astype(int) * 20
-        + df["MomentumFresh"].astype(int) * 5
-    )
-    df["SwingScore"] = (
-        df["BullSwing"].astype(int) * 20
-        + df["SwingFresh"].astype(int) * 5
-    )
-    near_ema = pd.to_numeric(
-        df.get("EMA255DistancePct"), errors="coerce"
-    ).abs() <= 2
-    df["EntryScore"] = (
-        near_ema.astype(int) * 15
-        + ((rsi >= 35) & (rsi <= 60)).astype(int) * 10
-    )
-    df["TrendScore"] = (
-        df["RegimeScore"]
-        + df["MomentumScore"]
-        + df["SwingScore"]
     )
 
     strong_trend = (
@@ -693,10 +670,9 @@ def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
     # ------------------------------------------------------------
     # 4. Trend Continuation
     #
-    # This is intentionally the strictest path. A persistent uptrend
-    # is not enough. The stock must have a valid continuation trigger,
-    # top-tier 3M relative strength, above-normal participation, and
-    # healthy momentum that is not already excessively stretched.
+    # Strong trend alone is deliberately insufficient. Require a
+    # continuation event: a recent 20/50 cross or current
+    # volume-confirmed positive momentum. Breakouts have their own path.
     # ------------------------------------------------------------
     recent_swing_cross = (
         df["SwingFresh"]
@@ -706,34 +682,21 @@ def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
         recent_swing_cross
         | df["VolumeConfirmedMomentum"]
     )
-
-    trend_quality = (
-        (rs3 >= 85)
-        & (volume >= 1.5)
-        & rsi.between(55, 75, inclusive="both")
-    )
-
     trend_continuation_active = (
         strong_trend
         & continuation_trigger
         & ~df["Breakout20"]
-        & trend_quality
+        & (rs3 >= 60)
     )
-
-    # Every active Trend Continuation candidate meets the full core
-    # quality gate. The score is therefore intentionally high and
-    # comparable with the other setup paths, while RS/liquidity remain
-    # secondary ranking fields in the final sort.
     trend_score = (
-        df["BullRegime"].astype(int) * 15
-        + df["BullSwing"].astype(int) * 15
-        + df["BullMomentum"].astype(int) * 10
-        + continuation_trigger.astype(int) * 20
-        + (rs3 >= 85).astype(int) * 20
-        + (volume >= 1.5).astype(int) * 10
-        + rsi.between(55, 75, inclusive="both").astype(int) * 10
+        df["BullRegime"].astype(int) * 20
+        + df["BullSwing"].astype(int) * 20
+        + df["BullMomentum"].astype(int) * 15
+        + recent_swing_cross.astype(int) * 20
+        + df["VolumeConfirmedMomentum"].astype(int) * 10
+        + (rs3 >= 70).astype(int) * 10
+        + (rs6 >= 60).astype(int) * 5
     )
-
     df["TrendContinuationScore"] = 0
     df.loc[trend_continuation_active, "TrendContinuationScore"] = (
         trend_score.loc[trend_continuation_active]
@@ -765,6 +728,177 @@ def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
         ascending=False,
         na_position="last",
     ).reset_index(drop=True)
+
+def investor_quality_gate(convergence: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply a stricter retail-investor quality gate to Confluence candidates.
+
+    This is a second-stage filter. Confluence remains intentionally broader.
+    No fixed number of stocks is selected.
+
+    The gate is setup-aware:
+      - Trend Continuation already has its strict path-specific rules.
+      - Fresh Momentum requires broader trend support, healthy RSI and participation.
+      - Breakout requires a true breakout, volume and relative strength.
+      - Pullback requires the existing EMA255/RSI trigger plus bullish structure.
+
+    Returns candidates ranked by InvestorTechnicalScore.
+    """
+    if convergence.empty:
+        return pd.DataFrame()
+
+    df = convergence.copy()
+
+    def num(col, default=0.0):
+        return pd.to_numeric(
+            df.get(col, pd.Series(default, index=df.index)),
+            errors="coerce",
+        )
+
+    def flag(col):
+        return df.get(
+            col,
+            pd.Series(False, index=df.index),
+        ).fillna(False).astype(bool)
+
+    rs3 = num("RS3MPct")
+    rs6 = num("RS6MPct")
+    volume = num("VolumeRatio")
+    atr = num("ATRPercent")
+    gap = num("GapPct")
+    rsi = num("RSI14")
+
+    history = df.get(
+        "HistoryEligible",
+        pd.Series(False, index=df.index),
+    ).fillna(False).astype(bool)
+
+    active = (
+        df.get("Setup", pd.Series("No active setup", index=df.index)).astype(str).ne("No active setup")
+        & (num("ConvergenceScore") >= 70)
+        & history
+    )
+
+    common_quality = (
+        (rs3 >= 75)
+        & (atr <= 6)
+        & (gap.abs() <= 5)
+    )
+
+    setup = df.get(
+        "Setup",
+        pd.Series("No active setup", index=df.index),
+    ).astype(str)
+
+    # Setup-specific quality gates.
+    trend_ok = (
+        (setup == "Trend Continuation")
+        & flag("BullRegime")
+        & flag("BullSwing")
+        & flag("BullMomentum")
+        & (rs3 >= 85)
+        & (volume >= 1.5)
+        & rsi.between(55, 75, inclusive="both")
+    )
+
+    momentum_ok = (
+        (setup == "Fresh Momentum")
+        & flag("MomentumFresh")
+        & flag("BullMomentum")
+        & (flag("BullRegime") | flag("BullSwing"))
+        & (rs3 >= 75)
+        & (volume >= 1.0)
+        & rsi.between(50, 75, inclusive="both")
+    )
+
+    breakout_ok = (
+        (setup == "Volume Breakout")
+        & flag("Breakout20")
+        & flag("BullRegime")
+        & (rs3 >= 75)
+        & (volume >= 1.5)
+        & rsi.between(50, 80, inclusive="both")
+    )
+
+    pullback_ok = (
+        (setup == "Pullback in Bull Regime")
+        & flag("Pullback")
+        & flag("BullRegime")
+        & flag("BullSwing")
+        & (rs3 >= 70)
+        & rsi.lt(35)
+        & (num("EMA255DistancePct").abs() <= 2)
+    )
+
+    candidate = active & common_quality & (
+        trend_ok | momentum_ok | breakout_ok | pullback_ok
+    )
+
+    # Quality score is for ranking valid candidates, not creating signals.
+    setup_component = num("ConvergenceScore").clip(0, 100) * 0.35
+    rs_component = rs3.clip(0, 100) * 0.20
+    rs6_component = rs6.clip(0, 100) * 0.10
+    volume_component = (
+        volume.clip(lower=0, upper=2.5) / 2.5
+    ) * 10
+
+    trend_component = (
+        (
+            flag("BullRegime").astype(int)
+            + flag("BullSwing").astype(int)
+            + flag("BullMomentum").astype(int)
+        ) / 3
+    ) * 10
+
+    # Entry quality rewards a useful RSI zone without forcing every setup
+    # into the same RSI behavior.
+    entry_component = pd.Series(0.0, index=df.index)
+    entry_component = entry_component.mask(
+        setup.eq("Fresh Momentum"),
+        rsi.between(50, 75, inclusive="both").astype(int) * 10,
+    )
+    entry_component = entry_component.mask(
+        setup.eq("Volume Breakout"),
+        rsi.between(50, 80, inclusive="both").astype(int) * 10,
+    )
+    entry_component = entry_component.mask(
+        setup.eq("Trend Continuation"),
+        rsi.between(55, 75, inclusive="both").astype(int) * 10,
+    )
+    entry_component = entry_component.mask(
+        setup.eq("Pullback in Bull Regime"),
+        rsi.lt(35).astype(int) * 10,
+    )
+
+    risk_component = (
+        (atr <= 4).astype(int) * 3
+        + ((atr > 4) & (atr <= 6)).astype(int) * 2
+        + (gap.abs() <= 2).astype(int) * 2
+    )
+
+    df["InvestorTechnicalScore"] = (
+        setup_component
+        + rs_component
+        + rs6_component
+        + volume_component
+        + trend_component
+        + entry_component
+        + risk_component
+    ).round(1)
+
+    df["InvestorQualityPass"] = candidate
+    df.loc[~candidate, "InvestorTechnicalScore"] = 0.0
+
+    return (
+        df.loc[candidate]
+        .sort_values(
+            ["InvestorTechnicalScore", "ConvergenceScore", "RS3MPct"],
+            ascending=False,
+            na_position="last",
+        )
+        .reset_index(drop=True)
+    )
+
 
 def fundamental_snapshot(ticker: str) -> dict:
     """Fetch six late-stage fundamental context fields only for finalists."""
