@@ -1164,181 +1164,185 @@ def buying_list_page():
         )
 
 
+
+
 def emerging_setups_page():
     """
-    Emerging Setups is intentionally an app.py-only feature.
+    Emerging Setups is an app.py-only discovery screen.
 
-    It reuses the already downloaded/processed `snapshot` and `indicators`
-    objects from the existing Scan Engine. It does not alter engine.py,
-    the existing strategy rules, Confluence, or Final Buy List.
-
-    The screen is for stocks with less than 255 available daily bars. It
-    deliberately does not require SMA200 or EMA255. The score is a separate
-    discovery score and is never fed into Confluence.
+    IMPORTANT:
+    - It uses the existing Nifty Market Snapshot already produced by the scan.
+    - It filters only DataQualityStatus == "Insufficient history".
+    - It does not calculate bars, merge datasets, download data, or touch engine.py.
+    - It never feeds its score into Confluence or Final Buy List.
     """
     require_scan()
 
-    snapshot = st.session_state["snapshot"].copy()
-    indicators = st.session_state["indicators"].copy()
+    snapshot = st.session_state.get("snapshot")
+    if snapshot is None or snapshot.empty:
+        st.warning("RUN A MARKET SCAN")
+        return
+
+    df = snapshot.copy()
+
+    if "DataQualityStatus" not in df.columns:
+        st.error(
+            "The current market snapshot does not contain DataQualityStatus. "
+            "Please run the current Scan Engine."
+        )
+        return
+
+    # Source of truth. The engine already classifies insufficient-history names.
+    working = df.loc[
+        df["DataQualityStatus"].astype(str).str.strip().eq("Insufficient history")
+    ].copy()
 
     terminal_header(
         "Emerging Setups",
-        "Early-stage discovery for newer stocks using indicators that do not require SMA 200 or EMA 255.",
+        "Early-stage research for newer stocks that do not yet have enough history for the full long-term strategy suite.",
     )
 
     with st.expander("WHAT IS EMERGING SETUPS?", expanded=False):
         st.markdown(
             """
-**Emerging Setups** is for newer stocks that have valid market data but have
-not yet built enough history for the full long-term strategy suite.
+**Emerging Setups** is a separate discovery screen for newer stocks.
 
-This page deliberately does **not** require:
+These stocks have valid market data, but the existing scanner has classified
+them as **Insufficient history**. That means the full long-term strategy suite
+cannot yet be applied consistently.
+
+This page therefore does **not** require:
 
 - **SMA 200**
 - **EMA 255**
 
-Instead, it focuses on shorter-history signals:
+Instead, it focuses on indicators that are already available in the market
+snapshot, such as **9/21 EMA momentum, 20/50 swing structure, RSI, relative
+strength, volume, ATR and liquidity**.
 
-- **9/21 EMA** for short-term momentum
-- **20/50 SMA** for swing structure
-- **RSI 14** for momentum condition
-- **Relative Strength** for strength versus the scanned universe
-- **Volume Ratio** for participation
-- **ATR %** for volatility
-- **Liquidity** for practical tradability
-
-This is a **discovery and watchlist screen**, not an automatic buy list.
-A strong Emerging Setup should still be researched on its chart and through
-fundamentals before any investment decision.
+Use this as a **research/watchlist tool**, not as a replacement for Confluence
+or the Final Buy List.
 """
         )
 
     with st.expander("HOW SHOULD A RETAIL INVESTOR USE THIS?", expanded=False):
         st.markdown(
             """
-**1. Start with the score.** Use it to prioritize which newer stocks deserve attention.
+**1. Start with the strongest setups.** Sort the table by Emerging Score.
 
-**2. Check the trend.** Prefer stocks where 9 EMA > 21 EMA and 20 SMA > 50 SMA.
+**2. Look for trend agreement.** Prefer 9 EMA > 21 EMA and 20 SMA > 50 SMA.
 
-**3. Check participation.** Strong volume relative to normal activity makes a move more meaningful.
+**3. Check relative strength.** A high RS percentile means the stock has
+performed better than a large portion of the scanned universe.
 
-**4. Check relative strength.** Higher RS percentiles mean the stock has been stronger than more of the scanned universe.
+**4. Check volume.** Strong volume participation makes a price move more
+meaningful than a move occurring on unusually weak volume.
 
-**5. Check risk.** ATR % tells you how much the stock normally moves. Higher volatility means wider price swings.
+**5. Check volatility and liquidity.** ATR % shows typical price movement,
+while liquidity helps determine whether the stock is practical to trade.
 
-**6. Research the company.** This screen does not replace the Final Buy List's technical and fundamental quality process.
-
-**Important:** Emerging Setups is intentionally separate from Confluence. It does not make a newer stock look like it has a long-term trend signal that it cannot yet prove.
+**6. Research before acting.** Emerging Setups is an early-discovery screen.
+It is deliberately not the same as the stricter Final Buy List.
 """
         )
 
     with st.expander("WHAT DO THESE INDICATORS MEAN?", expanded=False):
         st.markdown(
             """
-| Indicator | Beginner interpretation |
+| Indicator | Simple meaning |
 |---|---|
-| **9 EMA** | A fast-moving average. It reacts quickly to recent price changes. |
-| **21 EMA** | A slower short-term trend reference. 9 EMA above 21 EMA suggests positive short-term momentum. |
-| **20 SMA** | A short swing-trend reference. |
-| **50 SMA** | A broader swing-trend reference. 20 SMA above 50 SMA suggests bullish swing structure. |
-| **RSI 14** | Measures recent momentum. Very high RSI can also mean a stock is extended, so higher is not automatically better. |
-| **RS 3M %ile** | The stock's 3-month return percentile versus the scanned universe. Higher means stronger relative performance. |
-| **Volume x** | Current volume compared with its 20-day average. 2.0x means roughly twice normal volume. |
-| **ATR %** | Typical daily price movement expressed as a percentage. Higher means more volatility. |
-| **Liquidity** | Based on 20-day average traded value. It helps avoid stocks that may be difficult for a retail investor to trade. |
+| **9 EMA** | Fast short-term trend line. |
+| **21 EMA** | Slower short-term trend line. 9 EMA above 21 EMA suggests positive momentum. |
+| **20 SMA** | Short swing-trend reference. |
+| **50 SMA** | Broader swing-trend reference. 20 SMA above 50 SMA suggests bullish swing structure. |
+| **RSI 14** | Measures recent momentum. Very high RSI can also mean a stock is extended. |
+| **RS 3M %ile** | 3-month relative-strength percentile versus the scanned universe. |
+| **Volume x** | Current volume relative to its 20-day average. |
+| **ATR %** | Typical daily price movement as a percentage of price. |
+| **Liquidity** | 20-day average traded-value classification. |
 """
         )
 
-    # Use the existing downloaded indicator history. No new market-data call.
-    if "Yahoo Symbol" not in indicators.columns:
-        st.error("The existing scan does not contain Yahoo Symbol data. Run the Scan Engine again.")
-        return
-
-    bar_counts = (
-        indicators.dropna(subset=["Yahoo Symbol"])
-        .groupby("Yahoo Symbol")
-        .size()
-        .rename("Bars")
-        .reset_index()
-    )
-
-    working = snapshot.merge(bar_counts, on="Yahoo Symbol", how="left")
-    working["Bars"] = pd.to_numeric(working["Bars"], errors="coerce")
-
-    # Emerging = insufficient history for the full 255-day strategy suite.
-    # SMA200/EMA255 are not required anywhere on this page.
-    working = working.loc[
-        working["Bars"].notna() & (working["Bars"] < 255)
-    ].copy()
-
     if working.empty:
         st.info(
-            "No stocks in the current scan have less than 255 daily bars. "
-            "Run a broader universe or scan again when newer listings are present."
+            "There are currently no stocks classified as Insufficient history "
+            "in the latest market snapshot."
         )
         return
 
-    # Independent discovery score. This never modifies Confluence.
+    # Independent discovery score. Existing Confluence is untouched.
     score = pd.Series(0.0, index=working.index)
 
-    for column, points in [
-        ("BullMomentum", 20),
-        ("BullSwing", 20),
-        ("MomentumFresh", 10),
-        ("VolumeConfirmedMomentum", 10),
-        ("Breakout20", 10),
-    ]:
+    def add_bool_score(column, points):
+        nonlocal score
         if column in working.columns:
-            score += working[column].fillna(False).astype(bool).astype(float) * points
+            score += (
+                working[column]
+                .fillna(False)
+                .astype(bool)
+                .astype(float)
+                * points
+            )
 
-    rs = pd.to_numeric(working.get("RS3MPct"), errors="coerce")
-    score += rs.fillna(0).clip(0, 100) * 0.20
+    add_bool_score("BullMomentum", 20)
+    add_bool_score("BullSwing", 20)
+    add_bool_score("MomentumFresh", 10)
+    add_bool_score("VolumeConfirmedMomentum", 10)
+    add_bool_score("Breakout20", 10)
 
-    rsi = pd.to_numeric(working.get("RSI14"), errors="coerce")
-    score += rsi.apply(
-        lambda x: 5.0 if pd.notna(x) and 50 <= x <= 70
-        else 2.5 if pd.notna(x) and 45 <= x < 50
-        else 0.0
-    )
+    if "RS3MPct" in working.columns:
+        rs = pd.to_numeric(working["RS3MPct"], errors="coerce")
+        score += rs.fillna(0).clip(0, 100) * 0.20
+
+    if "RSI14" in working.columns:
+        rsi = pd.to_numeric(working["RSI14"], errors="coerce")
+        score += rsi.apply(
+            lambda x:
+                5.0 if pd.notna(x) and 50 <= x <= 70
+                else 2.5 if pd.notna(x) and 45 <= x < 50
+                else 0.0
+        )
 
     working["Emerging Score"] = score.clip(0, 100).round(1)
 
-    f1, f2, f3 = st.columns([1.4, 1, 1])
+    c1, c2, c3 = st.columns([1.4, 1, 1])
 
-    with f1:
+    with c1:
         min_score = st.slider(
             "Minimum Emerging Score",
-            0, 100, 55, 5,
+            min_value=0,
+            max_value=100,
+            value=55,
+            step=5,
             key="emerging_min_score",
         )
 
-    with f2:
+    with c2:
         liquidity_filter = st.selectbox(
             "Liquidity",
             ["All", "₹1 Cr+", "₹5 Cr+", "₹25 Cr+"],
-            index=0,
             key="emerging_liquidity",
-            help="Optional. Uses the existing 20-day average traded-value field.",
         )
 
-    with f3:
-        only_bullish = st.toggle(
+    with c3:
+        bullish_only = st.toggle(
             "Prefer bullish structure",
             value=True,
             key="emerging_bullish_structure",
-            help="Keeps stocks with either bullish momentum or bullish swing structure.",
         )
 
-    thresholds = {
+    liquidity_thresholds = {
         "All": 0,
         "₹1 Cr+": 1_00_00_000,
         "₹5 Cr+": 5_00_00_000,
         "₹25 Cr+": 25_00_00_000,
     }
 
-    filtered = working.loc[working["Emerging Score"] >= min_score].copy()
+    filtered = working.loc[
+        working["Emerging Score"] >= min_score
+    ].copy()
 
-    if only_bullish:
+    if bullish_only:
         bullish = pd.Series(False, index=filtered.index)
         if "BullMomentum" in filtered.columns:
             bullish |= filtered["BullMomentum"].fillna(False).astype(bool)
@@ -1351,38 +1355,53 @@ fundamentals before any investment decision.
             filtered["AvgTradedValue20"], errors="coerce"
         ).fillna(0)
         filtered = filtered.loc[
-            traded_value >= thresholds[liquidity_filter]
+            traded_value >= liquidity_thresholds[liquidity_filter]
         ].copy()
 
-    filtered = filtered.sort_values(
-        ["Emerging Score", "RS3MPct", "VolumeRatio"],
-        ascending=False,
-        na_position="last",
-    ).reset_index(drop=True)
+    sort_columns = [
+        c for c in ["Emerging Score", "RS3MPct", "VolumeRatio"]
+        if c in filtered.columns
+    ]
+    if sort_columns:
+        filtered = filtered.sort_values(
+            sort_columns,
+            ascending=False,
+            na_position="last",
+        )
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("LIMITED-HISTORY STOCKS", f"{len(working):,}")
-    c2.metric("PASSING SCORE", f"{len(filtered):,}")
-    c3.metric(
-        "BULLISH MOMENTUM",
-        f"{int(working['BullMomentum'].fillna(False).sum()):,}"
-        if "BullMomentum" in working.columns else "—",
-    )
-    c4.metric(
-        "BULLISH SWING",
-        f"{int(working['BullSwing'].fillna(False).sum()):,}"
-        if "BullSwing" in working.columns else "—",
-    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("INSUFFICIENT-HISTORY STOCKS", f"{len(working):,}")
+    c2.metric("PASSING SCREEN", f"{len(filtered):,}")
+
+    if "BullMomentum" in working.columns:
+        c3.metric(
+            "BULLISH MOMENTUM",
+            f"{int(working['BullMomentum'].fillna(False).sum()):,}",
+        )
+    else:
+        c3.metric("BULLISH MOMENTUM", "—")
 
     st.caption(
-        "SMA 200 and EMA 255 are intentionally not required on this page."
+        "This page uses DataQualityStatus from the existing Nifty Market Snapshot. "
+        "SMA 200 and EMA 255 are intentionally not required."
     )
 
     display_cols = [
-        "Symbol", "Company", "Bars", "Close", "Emerging Score",
-        "EMA9", "EMA21", "SMA20", "SMA50", "RSI14", "RS3MPct",
-        "VolumeRatio", "VolumeConfirmedMomentum", "Breakout20",
-        "ATRPercent", "LiquidityBucket",
+        "Symbol",
+        "Company",
+        "Close",
+        "Emerging Score",
+        "EMA9",
+        "EMA21",
+        "SMA20",
+        "SMA50",
+        "RSI14",
+        "RS3MPct",
+        "VolumeRatio",
+        "VolumeConfirmedMomentum",
+        "Breakout20",
+        "ATRPercent",
+        "LiquidityBucket",
     ]
     display_cols = [c for c in display_cols if c in filtered.columns]
 
@@ -1393,11 +1412,19 @@ fundamentals before any investment decision.
         height=540,
         column_config={
             "Close": st.column_config.NumberColumn("Price", format="₹ %.2f"),
-            "Emerging Score": st.column_config.NumberColumn("Emerging Score", format="%.1f"),
+            "Emerging Score": st.column_config.NumberColumn(
+                "Emerging Score", format="%.1f"
+            ),
             "RSI14": st.column_config.NumberColumn("RSI 14", format="%.1f"),
-            "RS3MPct": st.column_config.NumberColumn("RS 3M %ile", format="%.0f"),
-            "VolumeRatio": st.column_config.NumberColumn("Volume x", format="%.2f"),
-            "ATRPercent": st.column_config.NumberColumn("ATR %", format="%.2f%%"),
+            "RS3MPct": st.column_config.NumberColumn(
+                "RS 3M %ile", format="%.0f"
+            ),
+            "VolumeRatio": st.column_config.NumberColumn(
+                "Volume x", format="%.2f"
+            ),
+            "ATRPercent": st.column_config.NumberColumn(
+                "ATR %", format="%.2f%%"
+            ),
         },
     )
 
@@ -1408,68 +1435,17 @@ fundamentals before any investment decision.
         mime="text/csv",
     )
 
-    st.markdown(
-        '<div class="section-kicker">Chart console</div>',
-        unsafe_allow_html=True,
-    )
-
-    if st.toggle(
-        "SHOW EMERGING SETUP CHART",
-        value=False,
-        key="emerging_chart_toggle",
-    ) and not filtered.empty:
-        c1, c2 = st.columns([2, 1])
-
-        with c1:
-            chosen = st.selectbox(
-                "Select stock",
-                filtered["Symbol"].tolist(),
-                key="emerging_chart_stock",
-            )
-
-        with c2:
-            chart_days = st.selectbox(
-                "Chart window",
-                [60, 90, 180, 252],
-                index=2,
-                key="emerging_chart_days",
-            )
-
-        row = filtered.loc[filtered["Symbol"] == chosen].iloc[0]
-        frame = indicators.loc[
-            indicators["Yahoo Symbol"] == row["Yahoo Symbol"]
-        ].copy()
-
-        st.caption(
-            "This chart uses only the indicators relevant to Emerging Setups: "
-            "9/21 EMA and 20/50 SMA, plus volume and RSI."
-        )
-
-        st.plotly_chart(
-            market_chart(
-                frame,
-                chosen,
-                ["EMA9", "EMA21", "SMA20", "SMA50"],
-                rsi_col="RSI14",
-                days=int(chart_days),
-                cross_columns=["Cross9_21", "Cross20_50"],
-                rsi_lines=[(30, "RSI 30"), (50, "RSI 50"), (70, "RSI 70")],
-            ),
-            use_container_width=True,
-            config={"displaylogo": False, "scrollZoom": True},
-        )
-
     with st.expander("IMPORTANT: WHAT THIS PAGE DOES NOT MEAN", expanded=False):
         st.markdown(
             """
-A high Emerging Score is **not** equivalent to a Final Buy List signal.
+A high Emerging Score is **not** a Final Buy List signal.
 
-The main strategy suite deliberately uses longer-term indicators when enough
-history exists. Emerging Setups exists because a newly listed company cannot
-prove those longer-term relationships yet.
+The normal strategy suite deliberately waits for sufficient history for
+long-term indicators. Emerging Setups is simply an earlier research lane for
+newer stocks.
 
-Treat the output as a **research queue / watchlist**. Review the chart,
-business quality, valuation, liquidity and your own risk controls before acting.
+Use the output to build a watchlist and investigate the company, chart,
+valuation, liquidity and risk before making an investment decision.
 """
         )
 
