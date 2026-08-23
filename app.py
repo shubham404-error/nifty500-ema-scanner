@@ -52,19 +52,24 @@ st.markdown(
     font-family: Helvetica, Arial, sans-serif;
 }
 
-html, body, [class*="css"] {
+html, body {
+    font-family: Helvetica, Arial, sans-serif;
+}
+
+.stApp [data-testid="stMarkdownContainer"],
+.stApp [data-testid="stText"],
+.stApp p,
+.stApp h1,
+.stApp h2,
+.stApp h3,
+.stApp label {
     font-family: Helvetica, Arial, sans-serif;
 }
 
 .block-container {
     max-width: 1440px;
-    padding-top: 4.8rem !important;
+    padding-top: 1.5rem !important;
     padding-bottom: 3rem;
-}
-
-[data-testid="stTopNav"] {
-    z-index: 1000;
-    min-height: 52px;
 }
 
 [data-testid="stSidebar"] {
@@ -72,8 +77,21 @@ html, body, [class*="css"] {
     border-right: 1px solid var(--border);
 }
 
-[data-testid="stSidebar"] * {
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] *,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] button {
     font-family: Helvetica, Arial, sans-serif;
+}
+
+/* Never override Streamlit / Material Symbols fonts.
+   Otherwise icon ligatures render as literal text such as keyboard_double_arrow. */
+.material-symbols-rounded,
+.material-symbols-outlined,
+[class*="material-symbols"],
+[data-testid="stSidebar"] [class*="material-symbols"] {
+    font-family: "Material Symbols Rounded", "Material Symbols Outlined", sans-serif !important;
+    font-feature-settings: "liga";
 }
 
 .terminal-topbar {
