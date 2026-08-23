@@ -960,43 +960,43 @@ def buying_list_page():
 
 pages = {
     "Overview": [
-        st.Page(home_page, title="Home", icon="⌂"),
+        st.Page(home_page, title="Home", icon="🏠"),
     ],
     "Workflow": [
-        st.Page(scan_page, title="Scan Engine", icon="↻"),
+        st.Page(scan_page, title="Scan Engine", icon="🔄"),
     ],
     "Strategies": [
         st.Page(
             lambda: strategy_page("regime"),
             title="Market Regime",
-            icon="◈",
+            icon="📐",
         ),
         st.Page(
             lambda: strategy_page("momentum"),
             title="9/21 Momentum",
-            icon="↗",
+            icon="📈",
         ),
         st.Page(
             lambda: strategy_page("swing"),
             title="20/50 Swing",
-            icon="↗",
+            icon="📈",
         ),
         st.Page(
             lambda: strategy_page("pullback"),
             title="EMA 255 Pullback",
-            icon="⌁",
+            icon="↔️",
         ),
     ],
     "Decision": [
         st.Page(
             convergence_page,
             title="Convergence",
-            icon="⊙",
+            icon="🎯",
         ),
         st.Page(
             buying_list_page,
             title="Final Buying List",
-            icon="★",
+            icon="⭐",
         ),
     ],
 }
