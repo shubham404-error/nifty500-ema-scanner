@@ -545,83 +545,207 @@ def add_days_since_cross(
 
 
 def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
-    """Score distinct setup paths instead of averaging contradictory signals."""
+    """
+    Detect active setups first and rank only those setups.
+
+    Trend state is context, not a buy signal by itself. A stock receives an
+    active setup only when a current or recent trigger exists.
+    """
     if snapshot.empty:
         return pd.DataFrame()
 
     df = snapshot.copy()
-    rs3 = df["RS3MPct"].fillna(0)
-    volume = df["VolumeRatio"].fillna(0)
-    liquid = df["LiquidityEligible"].fillna(False).astype(int)
 
-    # Baseline trend evidence retained for continuity with the existing app.
+    # Safe numeric/boolean inputs. Existing public columns are preserved.
+    rs3 = pd.to_numeric(df.get("RS3MPct"), errors="coerce").fillna(0)
+    rs6 = pd.to_numeric(df.get("RS6MPct"), errors="coerce").fillna(0)
+    volume = pd.to_numeric(df.get("VolumeRatio"), errors="coerce").fillna(0)
+    atr_pct = pd.to_numeric(df.get("ATRPercent"), errors="coerce")
+    days_momentum = pd.to_numeric(df.get("DaysSince9_21"), errors="coerce")
+    days_swing = pd.to_numeric(df.get("DaysSince20_50"), errors="coerce")
+
+    bull_regime = df.get("BullRegime", False)
+    bull_swing = df.get("BullSwing", False)
+    bull_momentum = df.get("BullMomentum", False)
+    momentum_fresh = df.get("MomentumFresh", False)
+    swing_fresh = df.get("SwingFresh", False)
+    pullback = df.get("Pullback", False)
+    breakout = df.get("Breakout20", False)
+    volume_confirmed = df.get("VolumeConfirmedMomentum", False)
+
+    for name, series in {
+        "BullRegime": bull_regime,
+        "BullSwing": bull_swing,
+        "BullMomentum": bull_momentum,
+        "MomentumFresh": momentum_fresh,
+        "SwingFresh": swing_fresh,
+        "Pullback": pullback,
+        "Breakout20": breakout,
+        "VolumeConfirmedMomentum": volume_confirmed,
+    }.items():
+        if not isinstance(series, pd.Series):
+            series = pd.Series(series, index=df.index)
+        df[name] = series.fillna(False).astype(bool)
+
+    rsi_cols = [col for col in df.columns if re.match(r"^RSI\\d+$", str(col))]
+    rsi = (
+        pd.to_numeric(df[rsi_cols[0]], errors="coerce")
+        if rsi_cols
+        else pd.Series(float("nan"), index=df.index)
+    )
+
+    # Baseline fields are retained for compatibility with existing pages.
     df["RegimeScore"] = df["BullRegime"].astype(int) * 25
-    df["MomentumScore"] = df["BullMomentum"].astype(int) * 20 + df["MomentumFresh"].astype(int) * 5
-    df["SwingScore"] = df["BullSwing"].astype(int) * 20 + df["SwingFresh"].astype(int) * 5
-    near_ema = df["EMA255DistancePct"].abs() <= 2
-    rsi = df.filter(regex=r"^RSI\d+$").iloc[:, 0]
-    df["EntryScore"] = near_ema.astype(int) * 15 + ((rsi >= 35) & (rsi <= 60)).astype(int) * 10
-    df["TrendScore"] = df["RegimeScore"] + df["MomentumScore"] + df["SwingScore"]
+    df["MomentumScore"] = (
+        df["BullMomentum"].astype(int) * 20
+        + df["MomentumFresh"].astype(int) * 5
+    )
+    df["SwingScore"] = (
+        df["BullSwing"].astype(int) * 20
+        + df["SwingFresh"].astype(int) * 5
+    )
+    near_ema = pd.to_numeric(
+        df.get("EMA255DistancePct"), errors="coerce"
+    ).abs() <= 2
+    df["EntryScore"] = (
+        near_ema.astype(int) * 15
+        + ((rsi >= 35) & (rsi <= 60)).astype(int) * 10
+    )
+    df["TrendScore"] = (
+        df["RegimeScore"]
+        + df["MomentumScore"]
+        + df["SwingScore"]
+    )
 
-    # Setup-specific paths. Each path is evaluated on its own logic.
-    df["TrendContinuationScore"] = (
-        df["BullRegime"].astype(int) * 30
-        + df["BullSwing"].astype(int) * 25
-        + df["BullMomentum"].astype(int) * 20
-        + (rs3 >= 70).astype(int) * 15
-        + liquid * 10
+    strong_trend = (
+        df["BullRegime"]
+        & df["BullSwing"]
+        & df["BullMomentum"]
     )
-    df["PullbackScore"] = (
-        df["BullRegime"].astype(int) * 25
-        + df["BullSwing"].astype(int) * 15
-        + df["Pullback"].astype(int) * 30
-        + (rs3 >= 50).astype(int) * 10
-        + liquid * 10
-        + (volume >= 0.8).astype(int) * 10
+
+    # ------------------------------------------------------------
+    # 1. Fresh Momentum
+    # ------------------------------------------------------------
+    recent_momentum_cross = (
+        df["MomentumFresh"]
+        | (days_momentum.notna() & (days_momentum <= 5))
     )
-    df["FreshMomentumScore"] = (
+    fresh_momentum_active = (
+        recent_momentum_cross
+        & df["BullMomentum"]
+        & (df["BullRegime"] | df["BullSwing"])
+    )
+    fresh_momentum_score = (
         df["BullRegime"].astype(int) * 20
         + df["BullSwing"].astype(int) * 15
         + df["BullMomentum"].astype(int) * 15
-        + df["MomentumFresh"].astype(int) * 15
-        + df["VolumeConfirmedMomentum"].astype(int) * 15
-        + (rs3 >= 70).astype(int) * 10
-        + liquid * 10
-    )
-    df["BreakoutScore"] = (
-        df["BullRegime"].astype(int) * 20
-        + df["BullSwing"].astype(int) * 20
-        + df["Breakout20"].astype(int) * 25
+        + recent_momentum_cross.astype(int) * 25
         + (volume >= 1.5).astype(int) * 10
-        + (rs3 >= 70).astype(int) * 15
-        + liquid * 10
+        + (rs3 >= 70).astype(int) * 10
+        + (rsi >= 50).astype(int) * 5
+    )
+    df["FreshMomentumScore"] = 0
+    df.loc[fresh_momentum_active, "FreshMomentumScore"] = (
+        fresh_momentum_score.loc[fresh_momentum_active]
     )
 
-    score_cols = ["TrendContinuationScore", "PullbackScore", "FreshMomentumScore", "BreakoutScore"]
+    # ------------------------------------------------------------
+    # 2. Pullback in Bull Regime
+    # ------------------------------------------------------------
+    pullback_active = (
+        df["Pullback"]
+        & df["BullRegime"]
+        & df["BullSwing"]
+    )
+    pullback_score = (
+        df["BullRegime"].astype(int) * 25
+        + df["BullSwing"].astype(int) * 20
+        + df["Pullback"].astype(int) * 30
+        + (rs3 >= 50).astype(int) * 15
+        + (volume >= 0.8).astype(int) * 5
+        + (atr_pct <= 6).fillna(False).astype(int) * 5
+    )
+    df["PullbackScore"] = 0
+    df.loc[pullback_active, "PullbackScore"] = (
+        pullback_score.loc[pullback_active]
+    )
+
+    # ------------------------------------------------------------
+    # 3. Volume-confirmed Breakout
+    # ------------------------------------------------------------
+    breakout_active = (
+        df["Breakout20"]
+        & df["BullRegime"]
+    )
+    breakout_score = (
+        df["BullRegime"].astype(int) * 20
+        + df["BullSwing"].astype(int) * 15
+        + df["Breakout20"].astype(int) * 30
+        + (volume >= 1.5).astype(int) * 15
+        + (rs3 >= 70).astype(int) * 15
+        + (rsi >= 50).astype(int) * 5
+    )
+    df["BreakoutScore"] = 0
+    df.loc[breakout_active, "BreakoutScore"] = (
+        breakout_score.loc[breakout_active]
+    )
+
+    # ------------------------------------------------------------
+    # 4. Trend Continuation
+    #
+    # Strong trend alone is deliberately insufficient. Require a
+    # continuation event: a recent 20/50 cross or current
+    # volume-confirmed positive momentum. Breakouts have their own path.
+    # ------------------------------------------------------------
+    recent_swing_cross = (
+        df["SwingFresh"]
+        | (days_swing.notna() & (days_swing <= 10))
+    )
+    continuation_trigger = (
+        recent_swing_cross
+        | df["VolumeConfirmedMomentum"]
+    )
+    trend_continuation_active = (
+        strong_trend
+        & continuation_trigger
+        & ~df["Breakout20"]
+        & (rs3 >= 60)
+    )
+    trend_score = (
+        df["BullRegime"].astype(int) * 20
+        + df["BullSwing"].astype(int) * 20
+        + df["BullMomentum"].astype(int) * 15
+        + recent_swing_cross.astype(int) * 20
+        + df["VolumeConfirmedMomentum"].astype(int) * 10
+        + (rs3 >= 70).astype(int) * 10
+        + (rs6 >= 60).astype(int) * 5
+    )
+    df["TrendContinuationScore"] = 0
+    df.loc[trend_continuation_active, "TrendContinuationScore"] = (
+        trend_score.loc[trend_continuation_active]
+    )
+
+    score_cols = [
+        "TrendContinuationScore",
+        "PullbackScore",
+        "FreshMomentumScore",
+        "BreakoutScore",
+    ]
     setup_labels = {
         "TrendContinuationScore": "Trend Continuation",
         "PullbackScore": "Pullback in Bull Regime",
         "FreshMomentumScore": "Fresh Momentum",
         "BreakoutScore": "Volume Breakout",
     }
+
     df["SetupScore"] = df[score_cols].max(axis=1)
     best_col = df[score_cols].idxmax(axis=1)
     df["Setup"] = best_col.map(setup_labels)
+    df.loc[df["SetupScore"] <= 0, "Setup"] = "No active setup"
 
-    # Only label an active setup when its defining trigger exists.
-    active = (
-        (df["Setup"] == "Pullback in Bull Regime") & df["Pullback"]
-    ) | (
-        (df["Setup"] == "Fresh Momentum") & df["MomentumFresh"]
-    ) | (
-        (df["Setup"] == "Volume Breakout") & df["Breakout20"]
-    ) | (
-        (df["Setup"] == "Trend Continuation") & df["BullRegime"] & df["BullSwing"] & df["BullMomentum"]
-    )
-    df.loc[~active, "Setup"] = "No active setup"
-
-    # ConvergenceScore remains the public ranking field, now setup-aware.
+    # Public ranking field used by the existing UI.
     df["ConvergenceScore"] = df["SetupScore"].round(0).astype(int)
+
     return df.sort_values(
         ["ConvergenceScore", "RS3MPct", "AvgTradedValue20"],
         ascending=False,
