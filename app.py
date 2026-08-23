@@ -481,6 +481,8 @@ def home_page():
         "understand every indicator to use the app.",
     )
 
+    st.info("MARKET TIMING NOTICE. This terminal is designed for after-market-hours research using completed daily candles. Run the scan after the NSE market has closed and use the results to prepare your research or watchlist for the next session. It is not a live intraday scanner.")
+
     guide(
         "Start here. Let's scan.",
         "The workflow is simple. The analysis underneath it is not.",
@@ -578,9 +580,9 @@ def scan_page():
     with c1:
         universe_name = st.selectbox(
             "Stock universe",
-            ["NIFTY TOTAL MARKET", "NIFTY 500"],
+            ["NIFTY TOTAL MARKET", "NIFTY 500", "NIFTY 200", "NIFTY 50"],
             index=0,
-            help="Nifty Total Market gives the broadest screen.",
+            help="Nifty 50: focused large-cap. Nifty 200: large + mid-cap. Nifty 500: broad. Nifty Total Market: broadest.",
         )
 
     with c2:
@@ -716,13 +718,14 @@ def strategy_page(strategy: str):
     terminal_header(title, subtitle)
 
     explanations = {
-        "regime": ("How to use Market Regime", "Use this as market structure, not a standalone buy signal.", ["50 SMA above 200 SMA indicates bullish long-term structure.", "Check relative strength and liquidity before research."]),
-        "momentum": ("How to use Momentum", "This page separates a fresh cross from established momentum and shows whether volume confirms the move.", ["Fresh Cross is the 9 EMA moving above the 21 EMA.", "Volume Confirmed requires a positive day and at least 1.5x 20-day average volume.", "RS 3M percentile compares the stock with the scanned universe."]),
-        "swing": ("How to use Swing", "Medium-term structure using the 20 and 50 SMA.", ["Bullish means SMA 20 is above SMA 50.", "Use RS and liquidity to judge whether the trend has broader quality."]),
-        "pullback": ("How to use Pullback", "Oversold price near EMA 255 is a candidate, not an automatic buy.", ["RSI below 35 and within ±2% of EMA 255 trigger the setup.", "Bull regime, liquidity and relative strength provide context."]),
+        "regime": ("WHAT DO 50 / 200 SMA MEAN?", "The 50-day average tracks the medium-term trend and the 200-day average is a long-term trend reference. When the 50 SMA is above the 200 SMA, the app treats long-term structure as bullish. This is context, not a standalone buy signal."),
+        "momentum": ("WHAT DOES 9 / 21 EMA MOMENTUM MEAN?", "The 9 EMA reacts faster than the 21 EMA. A fresh 9-above-21 cross can signal strengthening short-term momentum. Established alignment means momentum is already positive, while volume confirmation adds evidence of participation."),
+        "swing": ("WHAT DOES 20 / 50 SWING STRUCTURE MEAN?", "The 20-day and 50-day simple moving averages describe medium-term trend structure. A 20 SMA above the 50 SMA indicates bullish swing alignment. Relative strength and volume provide additional quality context."),
+        "pullback": ("WHAT DOES EMA 255 PULLBACK MEAN?", "EMA 255 is used as a long-term trend reference. This setup looks for oversold price action near that level. RSI below 35 and proximity to EMA 255 create the trigger, but oversold does not automatically mean buy."),
     }
-    g_title,g_copy,g_steps=explanations[strategy]
-    guide(g_title,g_copy,g_steps)
+    expander_title, expander_text = explanations[strategy]
+    with st.expander(expander_title, expanded=False):
+        st.write(expander_text)
 
     filter_col, liquidity_col = st.columns([2,1])
     with liquidity_col:
@@ -781,6 +784,9 @@ def convergence_page():
     df=st.session_state["convergence"].copy()
     terminal_header("Confluence","Setup-aware ranking. Trend, pullback, fresh momentum and breakout paths are evaluated separately.")
 
+    with st.expander("WHAT DO THESE COLUMNS MEAN?", expanded=False):
+        st.markdown("**Setup** is the qualifying strategy path. **Convergence Score** measures that path strength. **RS 3M %ile** compares strength within the scanned universe. **Volume x** compares current participation with normal volume. **Liquidity** uses 20-day average traded value. **ATR %** is volatility.")
+
     c1,c2,c3,c4=st.columns(4)
     c1.metric("ACTIVE SETUPS",f"{int((df['Setup']!='No active setup').sum()):,}")
     c2.metric("SCORE 80+",f"{int((df['ConvergenceScore']>=80).sum()):,}")
@@ -816,6 +822,9 @@ def buying_list_page():
         "Strict retail-investor quality filter applied after Confluence. "
         "This is a research shortlist, not an automated buy recommendation.",
     )
+
+    with st.expander("WHAT DO THE FINAL BUY LIST COLUMNS MEAN?", expanded=False):
+        st.markdown("**Investor Conviction** combines final technical and fundamental quality checks. **Technical Quality** is the stricter second-stage screen. **Confluence** is the qualifying setup score. **RS**, **Volume x**, **Liquidity** and **ATR %** provide trend, participation, tradability and volatility context. **P/E, Revenue Growth, Net Profit Margin, Debt/Equity, EV/EBITDA and Market Cap** are research context and sanity checks, not automatic buy signals.")
 
     guide(
         "How this list is different",
