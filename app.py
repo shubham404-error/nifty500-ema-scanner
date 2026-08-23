@@ -389,6 +389,50 @@ def card(title: str, copy: str):
     )
 
 
+def normalize_convergence_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a stable convergence schema for every page.
+
+    This protects the UI from stale Streamlit session data and from scans where
+    optional enhancement fields are unavailable. Strategy pages should never
+    need to guess whether a feature column exists.
+    """
+    df = df.copy()
+    defaults = {
+        "Setup": "No active setup",
+        "ConvergenceScore": 0,
+        "LiquidityEligible": False,
+        "AvgTradedValue20": 0.0,
+        "LiquidityBucket": "Unavailable",
+        "RS3MPct": pd.NA,
+        "VolumeRatio": pd.NA,
+        "ATRPercent": pd.NA,
+        "GapPct": pd.NA,
+        "RSI14": pd.NA,
+        "EMA255DistancePct": pd.NA,
+        "Breakout20": False,
+        "TrendContinuationScore": 0,
+        "PullbackScore": 0,
+        "FreshMomentumScore": 0,
+        "BreakoutScore": 0,
+    }
+    for column, default in defaults.items():
+        if column not in df.columns:
+            df[column] = default
+
+    for column in [
+        "ConvergenceScore", "AvgTradedValue20", "RS3MPct", "VolumeRatio",
+        "ATRPercent", "GapPct", "RSI14", "EMA255DistancePct",
+        "TrendContinuationScore", "PullbackScore", "FreshMomentumScore",
+        "BreakoutScore",
+    ]:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    for column in ["LiquidityEligible", "Breakout20"]:
+        df[column] = df[column].fillna(False).astype(bool)
+
+    return df
+
+
 def require_scan():
     if "snapshot" not in st.session_state:
         st.info(
@@ -396,6 +440,13 @@ def require_scan():
             "All strategy pages reuse that cached scan."
         )
         st.stop()
+
+    # Normalize once at the session boundary so stale scans cannot cause
+    # page-specific KeyErrors later in Confluence or Final Buy List.
+    if "convergence" in st.session_state:
+        st.session_state["convergence"] = normalize_convergence_schema(
+            st.session_state["convergence"]
+        )
 
 
 def market_chart(
@@ -744,19 +795,8 @@ def strategy_page(strategy: str):
         table=snapshot.loc[snapshot["Pullback"]].copy()
         columns=["Symbol","Company","Close","RSI14","EMA255DistancePct","BullRegime","BullSwing","RS3MPct","VolumeRatio","AvgTradedValue20","LiquidityBucket","ATRPercent"]
 
-    # Defensive schema handling. A Streamlit session can retain a snapshot
-    # created before a newly added feature column existed. Missing display
-    # columns should not crash a strategy page.
-    for col in columns:
-        if col not in table.columns:
-            table[col] = pd.NA
-
-    if "AvgTradedValue20" not in table.columns:
-        table["AvgTradedValue20"] = pd.NA
-
     thresholds={"All":0,"₹1 Cr+":1_00_00_000,"₹5 Cr+":5_00_00_000,"₹25 Cr+":25_00_00_000}
-    liquidity_mask = table["AvgTradedValue20"].fillna(0) >= thresholds[liquidity_filter]
-    table = table.loc[liquidity_mask, columns].copy()
+    table=table.loc[table["AvgTradedValue20"].fillna(0)>=thresholds[liquidity_filter], columns].copy()
     st.metric("QUALIFYING STOCKS", f"{len(table):,}")
 
     search=st.text_input("Search",placeholder="Symbol or company",key=f"search_{strategy}")
@@ -788,21 +828,37 @@ def strategy_page(strategy: str):
 
 def convergence_page():
     require_scan()
-    df=st.session_state["convergence"].copy()
+    df=normalize_convergence_schema(st.session_state["convergence"])
     terminal_header("Confluence","Setup-aware ranking. Trend, pullback, fresh momentum and breakout paths are evaluated separately.")
+
+    # Defensive schema handling. A stale session or an incomplete scan must not
+    # crash the Confluence page when an enhancement column is unavailable.
+    if "Setup" not in df.columns:
+        df["Setup"] = "No active setup"
+    if "ConvergenceScore" not in df.columns:
+        df["ConvergenceScore"] = 0
+    if "Breakout20" not in df.columns:
+        df["Breakout20"] = False
+    if "LiquidityEligible" not in df.columns:
+        df["LiquidityEligible"] = False
 
     c1,c2,c3,c4=st.columns(4)
     c1.metric("ACTIVE SETUPS",f"{int((df['Setup']!='No active setup').sum()):,}")
-    c2.metric("SCORE 80+",f"{int((df['ConvergenceScore']>=80).sum()):,}")
-    c3.metric("VOLUME BREAKOUTS",f"{int(df['Breakout20'].sum()):,}")
-    c4.metric("LIQUID",f"{int(df['LiquidityEligible'].sum()):,}")
+    c2.metric("SCORE 80+",f"{int((pd.to_numeric(df['ConvergenceScore'], errors='coerce').fillna(0)>=80).sum()):,}")
+    c3.metric("VOLUME BREAKOUTS",f"{int(df['Breakout20'].fillna(False).astype(bool).sum()):,}")
+    c4.metric("LIQUID",f"{int(df['LiquidityEligible'].fillna(False).astype(bool).sum()):,}")
 
     f1,f2=st.columns(2)
     with f1: min_score=st.slider("Minimum setup score",0,100,60,5)
     with f2: setup_filter=st.selectbox("Setup type",["All"]+sorted([x for x in df['Setup'].dropna().unique() if x!='No active setup']))
-    output=df.loc[(df["ConvergenceScore"]>=min_score)&(df["Setup"]!="No active setup")].copy()
+    score_series = pd.to_numeric(df["ConvergenceScore"], errors="coerce").fillna(0)
+    output=df.loc[(score_series>=min_score)&(df["Setup"]!="No active setup")].copy()
     if setup_filter!="All": output=output.loc[output["Setup"]==setup_filter]
+
     cols=["Symbol","Company","Setup","Close","ConvergenceScore","TrendContinuationScore","PullbackScore","FreshMomentumScore","BreakoutScore","RS3MPct","VolumeRatio","LiquidityBucket","ATRPercent","RSI14","EMA255DistancePct"]
+    for col in cols:
+        if col not in output.columns:
+            output[col] = pd.NA
     output=output[cols].copy().reset_index(drop=True)
     output.insert(0,"Rank",range(1,len(output)+1))
     st.dataframe(output,use_container_width=True,hide_index=True,height=560)
@@ -818,7 +874,7 @@ def convergence_page():
 
 def buying_list_page():
     require_scan()
-    df=st.session_state["convergence"].copy()
+    df=normalize_convergence_schema(st.session_state["convergence"])
     terminal_header("Final Buy List","Liquid, high-quality research candidates. This is a shortlist, not an automated buy recommendation.")
     min_score=st.slider("Minimum shortlist score",60,100,70,5,key="buy_min_score")
     shortlist=df.loc[(df["Setup"]!="No active setup")&(df["LiquidityEligible"])&(df["ConvergenceScore"]>=min_score)].copy()
