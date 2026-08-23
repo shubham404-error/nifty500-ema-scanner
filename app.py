@@ -3,9 +3,11 @@ import time
 from datetime import date, timedelta
 
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 import yfinance as yf
+from plotly.subplots import make_subplots
 
 
 st.set_page_config(
@@ -390,99 +392,96 @@ def get_latest_buy_candidates(
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_stock_fundamentals(ticker):
-    """
-    Fetch free Yahoo Finance fundamentals for a single stock.
-
-    Yahoo does not consistently expose a sector-level P/E for every
-    NSE stock, so unavailable Sector PE values are shown as N/A.
-    """
+    """Fetch the six Buying List fundamentals from free Yahoo data."""
     empty = {
-        "PE": None,
-        "Sector PE": None,
+        "Trailing P/E": None,
         "P/B": None,
-        "ROE": None,
-        "Low": None,
-        "High": None,
+        "Profit Margin %": None,
+        "Debt/Equity %": None,
+        "EV/EBITDA": None,
+        "Market Cap": None,
     }
 
     try:
         info = yf.Ticker(ticker).info or {}
 
+        profit_margin = info.get("profitMargins")
+        debt_equity = info.get("debtToEquity")
+
         return {
-            "PE": info.get("trailingPE"),
-            "Sector PE": info.get("sectorPE"),
+            "Trailing P/E": info.get("trailingPE"),
             "P/B": info.get("priceToBook"),
-            "ROE": (
-                info.get("returnOnEquity") * 100
-                if info.get("returnOnEquity") is not None
+            "Profit Margin %": (
+                float(profit_margin) * 100
+                if profit_margin is not None
                 else None
             ),
-            "Low": info.get("fiftyTwoWeekLow"),
-            "High": info.get("fiftyTwoWeekHigh"),
+            "Debt/Equity %": (
+                float(debt_equity)
+                if debt_equity is not None
+                else None
+            ),
+            "EV/EBITDA": info.get("enterpriseToEbitda"),
+            "Market Cap": info.get("marketCap"),
         }
     except Exception:
         return empty
 
 
+def format_market_cap(value):
+    if pd.isna(value):
+        return "N/A"
+
+    value = float(value)
+
+    if value >= 1e12:
+        return f"₹{value / 1e12:.2f}T"
+    if value >= 1e9:
+        return f"₹{value / 1e9:.2f}B"
+    if value >= 1e7:
+        return f"₹{value / 1e7:.2f}Cr"
+
+    return f"₹{value:,.0f}"
+
+
 def add_fundamentals_to_buying_list(candidates):
-    """Add the six requested fundamental and 52-week price indicators."""
+    """Add the final six fundamentals to current technical candidates."""
     if candidates.empty:
         return candidates
 
     rows = []
 
     for _, row in candidates.iterrows():
-        fundamentals = get_stock_fundamentals(
-            row["Yahoo Symbol"]
-        )
-
-        low = fundamentals["Low"]
-        high = fundamentals["High"]
-        close = row["Close"]
-
-        if (
-            low is not None
-            and high is not None
-            and high > low
-        ):
-            position_pct = (
-                (close - low) / (high - low) * 100
-            )
-            position_pct = max(0.0, min(100.0, position_pct))
-            range_text = (
-                f"{position_pct:.1f}% of 52W range"
-            )
-        else:
-            range_text = "N/A"
+        fundamentals = get_stock_fundamentals(row["Yahoo Symbol"])
 
         rows.append(
             {
                 "Symbol": row["Symbol"],
                 "Company": row["Company"],
+                "Yahoo Symbol": row["Yahoo Symbol"],
+                "Close": round(float(row["Close"]), 2),
                 "RSI": round(float(row["RSI"]), 2),
                 "Distance from EMA %": round(
                     float(row["Distance from EMA %"]),
                     2,
                 ),
-                "PE": fundamentals["PE"],
-                "Sector PE": fundamentals["Sector PE"],
+                "Trailing P/E": fundamentals["Trailing P/E"],
                 "P/B": fundamentals["P/B"],
-                "ROE %": fundamentals["ROE"],
-                "Low": low,
-                "52W Range": range_text,
-                "High": high,
+                "Profit Margin %": fundamentals["Profit Margin %"],
+                "Debt/Equity %": fundamentals["Debt/Equity %"],
+                "EV/EBITDA": fundamentals["EV/EBITDA"],
+                "Market Cap": fundamentals["Market Cap"],
             }
         )
 
     output = pd.DataFrame(rows)
 
     numeric_columns = [
-        "PE",
-        "Sector PE",
+        "Trailing P/E",
         "P/B",
-        "ROE %",
-        "Low",
-        "High",
+        "Profit Margin %",
+        "Debt/Equity %",
+        "EV/EBITDA",
     ]
 
     for column in numeric_columns:
@@ -491,6 +490,10 @@ def add_fundamentals_to_buying_list(candidates):
             errors="coerce",
         ).round(2)
 
+    output["Market Cap"] = output["Market Cap"].apply(
+        format_market_cap
+    )
+
     output.insert(
         0,
         "Rank",
@@ -498,6 +501,120 @@ def add_fundamentals_to_buying_list(candidates):
     )
 
     return output
+
+
+def build_buying_chart(frame, ema_period, rsi_period, chart_days):
+    """Create a Bloomberg-style price, EMA and RSI chart."""
+    chart_frame = (
+        frame
+        .sort_values("Date")
+        .copy()
+    )
+
+    chart_frame["EMA"] = chart_frame["Close"].ewm(
+        span=ema_period,
+        adjust=False,
+        min_periods=ema_period,
+    ).mean()
+
+    chart_frame["RSI"] = calculate_rsi(
+        chart_frame["Close"],
+        period=rsi_period,
+    )
+
+    chart_frame = chart_frame.tail(chart_days)
+
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        row_heights=[0.72, 0.28],
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=chart_frame["Date"],
+            open=chart_frame["Open"],
+            high=chart_frame["High"],
+            low=chart_frame["Low"],
+            close=chart_frame["Close"],
+            name="Price",
+            increasing_line_color="#2dd4bf",
+            decreasing_line_color="#fb7185",
+        ),
+        row=1,
+        col=1,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=chart_frame["Date"],
+            y=chart_frame["EMA"],
+            mode="lines",
+            name=f"EMA {ema_period}",
+            line={"color": "#f59e0b", "width": 2},
+        ),
+        row=1,
+        col=1,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=chart_frame["Date"],
+            y=chart_frame["RSI"],
+            mode="lines",
+            name=f"RSI {rsi_period}",
+            line={"color": "#60a5fa", "width": 2},
+        ),
+        row=2,
+        col=1,
+    )
+
+    for level in [30, 35, 70]:
+        fig.add_hline(
+            y=level,
+            line_dash="dot",
+            line_color="#475569",
+            row=2,
+            col=1,
+        )
+
+    fig.update_layout(
+        height=680,
+        margin={"l": 10, "r": 10, "t": 45, "b": 10},
+        paper_bgcolor="#080c12",
+        plot_bgcolor="#080c12",
+        font={"color": "#d8e0ea", "family": "Arial"},
+        legend={
+            "orientation": "h",
+            "y": 1.04,
+            "x": 0,
+        },
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
+    )
+
+    fig.update_xaxes(
+        gridcolor="#1f2937",
+        showline=False,
+        zeroline=False,
+    )
+    fig.update_yaxes(
+        gridcolor="#1f2937",
+        showline=False,
+        zeroline=False,
+    )
+
+    fig.update_yaxes(
+        range=[0, 100],
+        row=2,
+        col=1,
+    )
+
+    return fig
+
+
 
 def scan_prices(
     universe,
@@ -710,75 +827,89 @@ def scan_prices(
     return output
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
-def get_fundamental_data(tickers_tuple):
-    """Fetch free fundamental fields used by the Buying List."""
-    rows = []
-
-    for ticker in tickers_tuple:
-        try:
-            info = yf.Ticker(ticker).info or {}
-
-            market_cap = info.get("marketCap")
-            roe = info.get("returnOnEquity")
-            profit_margin = info.get("profitMargins")
-
-            rows.append(
-                {
-                    "Yahoo Symbol": ticker,
-                    "P/E": info.get("trailingPE"),
-                    "Sector P/E": None,
-                    "P/B": info.get("priceToBook"),
-                    "ROE %": (
-                        roe * 100
-                        if roe is not None
-                        else None
-                    ),
-                    "Net Profit Margin %": (
-                        profit_margin * 100
-                        if profit_margin is not None
-                        else None
-                    ),
-                    "Market Cap": market_cap,
-                }
-            )
-        except Exception:
-            rows.append(
-                {
-                    "Yahoo Symbol": ticker,
-                    "P/E": None,
-                    "Sector P/E": None,
-                    "P/B": None,
-                    "ROE %": None,
-                    "Net Profit Margin %": None,
-                    "Market Cap": None,
-                }
-            )
-
-    return pd.DataFrame(rows)
-
-
-def format_market_cap(value):
-    if pd.isna(value):
-        return ""
-
-    value = float(value)
-
-    if value >= 1e12:
-        return f"₹{value / 1e12:.2f}T"
-    if value >= 1e9:
-        return f"₹{value / 1e9:.2f}B"
-    if value >= 1e7:
-        return f"₹{value / 1e7:.2f}Cr"
-
-    return f"₹{value:,.0f}"
 
 
 # ---------------- UI ----------------
 
-st.title("Nifty 500 EMA Scanner")
-st.caption(
-    "Free, API-key-free daily technical scanner for the Nifty 500."
+st.markdown(
+    """
+<style>
+    .stApp {
+        background: #080c12;
+        color: #d8e0ea;
+    }
+    [data-testid="stSidebar"] {
+        background: #0d131c;
+        border-right: 1px solid #253243;
+    }
+    .terminal-header {
+        border: 1px solid #253243;
+        border-left: 4px solid #f59e0b;
+        background: #0d131c;
+        padding: 18px 22px;
+        margin-bottom: 14px;
+    }
+    .terminal-title {
+        color: #f8fafc;
+        font-size: 28px;
+        font-weight: 800;
+        letter-spacing: 0.6px;
+    }
+    .terminal-subtitle {
+        color: #8fa3b8;
+        font-size: 13px;
+        margin-top: 4px;
+        font-family: monospace;
+    }
+    .terminal-label {
+        color: #f59e0b;
+        font-family: monospace;
+        font-size: 12px;
+        letter-spacing: 1px;
+    }
+    .stMetric {
+        background: #0d131c;
+        border: 1px solid #253243;
+        border-top: 2px solid #f59e0b;
+        padding: 10px 14px;
+    }
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #253243;
+    }
+    .stButton > button {
+        border-radius: 2px;
+        border: 1px solid #f59e0b;
+        background: #121a25;
+        color: #f8fafc;
+        font-weight: 700;
+    }
+    .stButton > button:hover {
+        background: #f59e0b;
+        color: #080c12;
+    }
+    .stDownloadButton > button {
+        border-radius: 2px;
+        border: 1px solid #334155;
+        background: #121a25;
+        color: #d8e0ea;
+    }
+    h1, h2, h3 {
+        letter-spacing: 0.3px;
+    }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+<div class="terminal-header">
+    <div class="terminal-label">NSE / EQUITY SCREENER / TECHNICAL + FUNDAMENTAL</div>
+    <div class="terminal-title">NIFTY 500 EMA TERMINAL</div>
+    <div class="terminal-subtitle">EMA 255 · RSI · CURRENT BUY CANDIDATES · FREE DATA</div>
+</div>
+""",
+    unsafe_allow_html=True,
 )
 
 with st.sidebar:
@@ -935,6 +1066,8 @@ if run_scan:
 
         st.session_state["signals"] = signals
         st.session_state["buying_list"] = buying_list
+        st.session_state["prices"] = prices
+        st.session_state["universe"] = universe
         st.session_state["ema_period"] = int(ema_period)
         st.session_state["scan_meta"] = {
             "constituents": len(universe),
@@ -1024,16 +1157,23 @@ else:
         recent_count,
     )
 
+st.markdown(
+    '<div class="terminal-label">WATCHLIST / BUYING CANDIDATES</div>',
+    unsafe_allow_html=True,
+)
 st.subheader("Buying List")
 
 buying_list = st.session_state.get(
     "buying_list",
     pd.DataFrame(),
 )
+stored_prices = st.session_state.get(
+    "prices",
+    pd.DataFrame(),
+)
 
 st.caption(
-    "Current setup: RSI below 35 and distance from EMA 255 "
-    "within ±2%."
+    "LIVE FILTER: RSI < 35  |  DISTANCE FROM EMA 255 ≤ ±2%"
 )
 
 if buying_list.empty:
@@ -1041,29 +1181,145 @@ if buying_list.empty:
         "No stocks currently meet both Buying List conditions."
     )
 else:
-    st.success(
-        f"{len(buying_list)} stock(s) currently meet the criteria."
+    buy_col_1, buy_col_2, buy_col_3 = st.columns([1, 1, 2])
+
+    buy_col_1.metric(
+        "BUY CANDIDATES",
+        f"{len(buying_list):,}",
     )
+    buy_col_2.metric(
+        "LOWEST RSI",
+        f"{buying_list['RSI'].min():.2f}",
+    )
+    buy_col_3.metric(
+        "FILTER",
+        "RSI < 35 | EMA ±2%",
+    )
+
+    display_columns = [
+        "Rank",
+        "Symbol",
+        "Company",
+        "Close",
+        "RSI",
+        "Distance from EMA %",
+        "Trailing P/E",
+        "P/B",
+        "Profit Margin %",
+        "Debt/Equity %",
+        "EV/EBITDA",
+        "Market Cap",
+    ]
+
+    display_columns = [
+        column
+        for column in display_columns
+        if column in buying_list.columns
+    ]
 
     st.dataframe(
-        buying_list,
+        buying_list[display_columns],
         use_container_width=True,
         hide_index=True,
+        height=420,
     )
 
-    buying_csv = buying_list.to_csv(
-        index=False
-    ).encode("utf-8")
+    buying_csv = buying_list[
+        display_columns
+    ].to_csv(index=False).encode("utf-8")
 
     st.download_button(
-        "Download nifty500_buying_list.csv",
+        "EXPORT BUYING LIST CSV",
         data=buying_csv,
         file_name="nifty500_buying_list.csv",
         mime="text/csv",
     )
 
+    show_charts = st.toggle(
+        "SHOW CHARTS FOR BUYING LIST STOCKS",
+        value=False,
+    )
+
+    if show_charts:
+        st.markdown(
+            '<div class="terminal-label">CHART CONSOLE</div>',
+            unsafe_allow_html=True,
+        )
+
+        chart_left, chart_right = st.columns([2, 1])
+
+        with chart_left:
+            selected_symbol = st.selectbox(
+                "Select Buying List Stock",
+                buying_list["Symbol"].tolist(),
+            )
+
+        with chart_right:
+            chart_days = st.selectbox(
+                "Chart Window",
+                [90, 180, 252, 365],
+                index=2,
+            )
+
+        selected_row = buying_list.loc[
+            buying_list["Symbol"] == selected_symbol
+        ].iloc[0]
+
+        selected_ticker = selected_row["Yahoo Symbol"]
+
+        chart_frame = stored_prices.loc[
+            stored_prices["Yahoo Symbol"] == selected_ticker
+        ].copy()
+
+        if chart_frame.empty:
+            st.warning(
+                "Price history is not available for this stock."
+            )
+        else:
+            st.markdown(
+                f"### {selected_symbol}  |  {selected_row['Company']}"
+            )
+
+            chart_metrics = st.columns(4)
+            chart_metrics[0].metric(
+                "CLOSE",
+                f"₹{selected_row['Close']:.2f}",
+            )
+            chart_metrics[1].metric(
+                "RSI",
+                f"{selected_row['RSI']:.2f}",
+            )
+            chart_metrics[2].metric(
+                "EMA DISTANCE",
+                f"{selected_row['Distance from EMA %']:.2f}%",
+            )
+            chart_metrics[3].metric(
+                "MARKET CAP",
+                selected_row["Market Cap"],
+            )
+
+            chart = build_buying_chart(
+                frame=chart_frame,
+                ema_period=current_ema,
+                rsi_period=meta.get("rsi_period", 14),
+                chart_days=int(chart_days),
+            )
+
+            st.plotly_chart(
+                chart,
+                use_container_width=True,
+                config={
+                    "displaylogo": False,
+                    "scrollZoom": True,
+                },
+            )
+
 st.divider()
 
+st.markdown(
+    '<div class="terminal-label">SIGNAL MONITOR / HISTORICAL TOUCHES</div>',
+    unsafe_allow_html=True,
+)
 st.subheader("Ranked EMA Signals")
 
 filter_col_1, filter_col_2 = st.columns([2, 1])
