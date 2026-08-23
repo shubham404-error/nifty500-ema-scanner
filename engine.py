@@ -31,7 +31,7 @@ NIFTY500_URLS = [
 ]
 
 MICROCAP250_URLS = [
-    "https://nsearchives.nseindia.com/content/indices/ind_niftymicrocap250list.csv",
+    "https://www.niftyindices.com/IndexConstituent/ind_niftymicrocap250_list.csv",
 ]
 
 
