@@ -278,6 +278,227 @@ def calculate_rsi(close, period=14):
     rs = avg_gain / avg_loss.replace(0, 1e-12)
     return 100 - (100 / (1 + rs))
 
+
+def get_latest_buy_candidates(
+    universe,
+    prices,
+    ema_period,
+    rsi_period,
+    rsi_threshold=35.0,
+    ema_distance_limit=2.0,
+):
+    """
+    Build a current buying list using the latest available trading day.
+
+    Conditions:
+    1. RSI < rsi_threshold
+    2. Distance from EMA is between -ema_distance_limit% and
+       +ema_distance_limit%
+    """
+    if prices.empty:
+        return pd.DataFrame()
+
+    company_lookup = (
+        universe
+        .set_index("Yahoo Symbol")[["Symbol", "Company"]]
+        .to_dict("index")
+    )
+
+    candidates = []
+
+    for ticker, frame in prices.groupby("Yahoo Symbol", sort=False):
+        frame = (
+            frame
+            .sort_values("Date")
+            .drop_duplicates("Date", keep="last")
+            .reset_index(drop=True)
+            .copy()
+        )
+
+        if len(frame) < max(ema_period, rsi_period):
+            continue
+
+        frame["EMA"] = frame["Close"].ewm(
+            span=ema_period,
+            adjust=False,
+            min_periods=ema_period,
+        ).mean()
+
+        frame["RSI"] = calculate_rsi(
+            frame["Close"],
+            period=rsi_period,
+        )
+
+        latest = frame.iloc[-1]
+
+        if pd.isna(latest["EMA"]) or pd.isna(latest["RSI"]):
+            continue
+
+        distance_pct = (
+            (
+                float(latest["Close"])
+                - float(latest["EMA"])
+            )
+            / float(latest["EMA"])
+            * 100
+        )
+
+        if (
+            float(latest["RSI"]) < rsi_threshold
+            and abs(distance_pct) <= ema_distance_limit
+        ):
+            metadata = company_lookup.get(
+                ticker,
+                {
+                    "Symbol": ticker.replace(".NS", ""),
+                    "Company": "",
+                },
+            )
+
+            candidates.append(
+                {
+                    "Symbol": metadata["Symbol"],
+                    "Company": metadata["Company"],
+                    "Yahoo Symbol": ticker,
+                    "RSI": float(latest["RSI"]),
+                    "Distance from EMA %": distance_pct,
+                    "Close": float(latest["Close"]),
+                }
+            )
+
+    if not candidates:
+        return pd.DataFrame(
+            columns=[
+                "Symbol",
+                "Company",
+                "Yahoo Symbol",
+                "RSI",
+                "Distance from EMA %",
+                "Close",
+            ]
+        )
+
+    return (
+        pd.DataFrame(candidates)
+        .sort_values(
+            ["RSI", "Distance from EMA %"],
+            ascending=[True, True],
+        )
+        .reset_index(drop=True)
+    )
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_stock_fundamentals(ticker):
+    """
+    Fetch free Yahoo Finance fundamentals for a single stock.
+
+    Yahoo does not consistently expose a sector-level P/E for every
+    NSE stock, so unavailable Sector PE values are shown as N/A.
+    """
+    empty = {
+        "PE": None,
+        "Sector PE": None,
+        "P/B": None,
+        "ROE": None,
+        "Low": None,
+        "High": None,
+    }
+
+    try:
+        info = yf.Ticker(ticker).info or {}
+
+        return {
+            "PE": info.get("trailingPE"),
+            "Sector PE": info.get("sectorPE"),
+            "P/B": info.get("priceToBook"),
+            "ROE": (
+                info.get("returnOnEquity") * 100
+                if info.get("returnOnEquity") is not None
+                else None
+            ),
+            "Low": info.get("fiftyTwoWeekLow"),
+            "High": info.get("fiftyTwoWeekHigh"),
+        }
+    except Exception:
+        return empty
+
+
+def add_fundamentals_to_buying_list(candidates):
+    """Add the six requested fundamental and 52-week price indicators."""
+    if candidates.empty:
+        return candidates
+
+    rows = []
+
+    for _, row in candidates.iterrows():
+        fundamentals = get_stock_fundamentals(
+            row["Yahoo Symbol"]
+        )
+
+        low = fundamentals["Low"]
+        high = fundamentals["High"]
+        close = row["Close"]
+
+        if (
+            low is not None
+            and high is not None
+            and high > low
+        ):
+            position_pct = (
+                (close - low) / (high - low) * 100
+            )
+            position_pct = max(0.0, min(100.0, position_pct))
+            range_text = (
+                f"{position_pct:.1f}% of 52W range"
+            )
+        else:
+            range_text = "N/A"
+
+        rows.append(
+            {
+                "Symbol": row["Symbol"],
+                "Company": row["Company"],
+                "RSI": round(float(row["RSI"]), 2),
+                "Distance from EMA %": round(
+                    float(row["Distance from EMA %"]),
+                    2,
+                ),
+                "PE": fundamentals["PE"],
+                "Sector PE": fundamentals["Sector PE"],
+                "P/B": fundamentals["P/B"],
+                "ROE %": fundamentals["ROE"],
+                "Low": low,
+                "52W Range": range_text,
+                "High": high,
+            }
+        )
+
+    output = pd.DataFrame(rows)
+
+    numeric_columns = [
+        "PE",
+        "Sector PE",
+        "P/B",
+        "ROE %",
+        "Low",
+        "High",
+    ]
+
+    for column in numeric_columns:
+        output[column] = pd.to_numeric(
+            output[column],
+            errors="coerce",
+        ).round(2)
+
+    output.insert(
+        0,
+        "Rank",
+        range(1, len(output) + 1),
+    )
+
+    return output
+
 def scan_prices(
     universe,
     prices,
@@ -489,6 +710,70 @@ def scan_prices(
     return output
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_fundamental_data(tickers_tuple):
+    """Fetch free fundamental fields used by the Buying List."""
+    rows = []
+
+    for ticker in tickers_tuple:
+        try:
+            info = yf.Ticker(ticker).info or {}
+
+            market_cap = info.get("marketCap")
+            roe = info.get("returnOnEquity")
+            profit_margin = info.get("profitMargins")
+
+            rows.append(
+                {
+                    "Yahoo Symbol": ticker,
+                    "P/E": info.get("trailingPE"),
+                    "Sector P/E": None,
+                    "P/B": info.get("priceToBook"),
+                    "ROE %": (
+                        roe * 100
+                        if roe is not None
+                        else None
+                    ),
+                    "Net Profit Margin %": (
+                        profit_margin * 100
+                        if profit_margin is not None
+                        else None
+                    ),
+                    "Market Cap": market_cap,
+                }
+            )
+        except Exception:
+            rows.append(
+                {
+                    "Yahoo Symbol": ticker,
+                    "P/E": None,
+                    "Sector P/E": None,
+                    "P/B": None,
+                    "ROE %": None,
+                    "Net Profit Margin %": None,
+                    "Market Cap": None,
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def format_market_cap(value):
+    if pd.isna(value):
+        return ""
+
+    value = float(value)
+
+    if value >= 1e12:
+        return f"₹{value / 1e12:.2f}T"
+    if value >= 1e9:
+        return f"₹{value / 1e9:.2f}B"
+    if value >= 1e7:
+        return f"₹{value / 1e7:.2f}Cr"
+
+    return f"₹{value:,.0f}"
+
+
 # ---------------- UI ----------------
 
 st.title("Nifty 500 EMA Scanner")
@@ -635,7 +920,21 @@ if run_scan:
                 rsi_period=int(rsi_period),
             )
 
+            buying_candidates = get_latest_buy_candidates(
+                universe=universe,
+                prices=prices,
+                ema_period=int(ema_period),
+                rsi_period=int(rsi_period),
+                rsi_threshold=35.0,
+                ema_distance_limit=2.0,
+            )
+
+            buying_list = add_fundamentals_to_buying_list(
+                buying_candidates
+            )
+
         st.session_state["signals"] = signals
+        st.session_state["buying_list"] = buying_list
         st.session_state["ema_period"] = int(ema_period)
         st.session_state["scan_meta"] = {
             "constituents": len(universe),
@@ -724,6 +1023,46 @@ else:
         "Signals in last 7 days",
         recent_count,
     )
+
+st.subheader("Buying List")
+
+buying_list = st.session_state.get(
+    "buying_list",
+    pd.DataFrame(),
+)
+
+st.caption(
+    "Current setup: RSI below 35 and distance from EMA 255 "
+    "within ±2%."
+)
+
+if buying_list.empty:
+    st.info(
+        "No stocks currently meet both Buying List conditions."
+    )
+else:
+    st.success(
+        f"{len(buying_list)} stock(s) currently meet the criteria."
+    )
+
+    st.dataframe(
+        buying_list,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    buying_csv = buying_list.to_csv(
+        index=False
+    ).encode("utf-8")
+
+    st.download_button(
+        "Download nifty500_buying_list.csv",
+        data=buying_csv,
+        file_name="nifty500_buying_list.csv",
+        mime="text/csv",
+    )
+
+st.divider()
 
 st.subheader("Ranked EMA Signals")
 
@@ -827,5 +1166,17 @@ RSI <= 30 is **Oversold**, otherwise it is **Neutral**.
 
 Only the **latest qualifying occurrence for each stock** is retained.
 Results are ranked by occurrence date, newest first.
+
+### Buying List
+
+A stock is included only when its **latest RSI is below 35** and its
+latest close is within **±2% of the EMA 255**.
+
+The Buying List shows six fundamental and price indicators:
+
+**PE | Sector PE | P/B | ROE | 52W Low | 52W High**
+
+The **52W Range** column shows the stock's current position within its
+52-week low to high range. Dividend yield is intentionally excluded.
 """
     )
