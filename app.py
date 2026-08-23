@@ -407,139 +407,63 @@ def market_chart(
     cross_columns: list[str] | None = None,
     rsi_lines: list[tuple[float, str]] | None = None,
 ):
-    """Bloomberg-style price + strategy indicators + RSI chart."""
+    """Price, volume and RSI chart. Missing optional columns are handled safely."""
     chart = frame.sort_values("Date").tail(days).copy()
-
     fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.035,
-        row_heights=[0.76, 0.24],
+        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.025,
+        row_heights=[0.66, 0.14, 0.20],
     )
+    fig.add_trace(go.Candlestick(
+        x=chart["Date"], open=chart["Open"], high=chart["High"],
+        low=chart["Low"], close=chart["Close"], name=symbol,
+        increasing_line_color="#26c281", increasing_fillcolor="#26c281",
+        decreasing_line_color="#ef6461", decreasing_fillcolor="#ef6461",
+    ), row=1, col=1)
 
-    fig.add_trace(
-        go.Candlestick(
-            x=chart["Date"],
-            open=chart["Open"],
-            high=chart["High"],
-            low=chart["Low"],
-            close=chart["Close"],
-            name=symbol,
-            increasing_line_color="#26c281",
-            increasing_fillcolor="#26c281",
-            decreasing_line_color="#ef6461",
-            decreasing_fillcolor="#ef6461",
-        ),
-        row=1,
-        col=1,
-    )
-
-    colors = {
-        "EMA9": "#6ea8fe",
-        "EMA21": "#f0a51a",
-        "SMA20": "#b084f5",
-        "SMA50": "#14b8a6",
-        "SMA200": "#ef4444",
-        "EMA255": "#f59e0b",
-    }
-
+    colors = {"EMA9":"#6ea8fe", "EMA21":"#f0a51a", "SMA20":"#b084f5",
+              "SMA50":"#14b8a6", "SMA200":"#ef4444", "EMA255":"#f59e0b"}
     for col in overlays:
-        if col not in chart.columns:
-            continue
-        fig.add_trace(
-            go.Scatter(
-                x=chart["Date"],
-                y=chart[col],
-                mode="lines",
-                name=col,
-                line={"width": 1.8, "color": colors.get(col, "#cbd5e1")},
-            ),
-            row=1,
-            col=1,
-        )
+        if col in chart.columns:
+            fig.add_trace(go.Scatter(
+                x=chart["Date"], y=chart[col], mode="lines", name=col,
+                line={"width":1.8, "color":colors.get(col,"#cbd5e1")},
+            ), row=1, col=1)
 
     for cross_col in cross_columns or []:
         if cross_col not in chart.columns:
             continue
-        marks = chart.loc[chart[cross_col].fillna(False)]
+        marks=chart.loc[chart[cross_col].fillna(False)]
         if marks.empty:
             continue
-        label = {
-            "Cross9_21": "9/21 Bullish Cross",
-            "Cross20_50": "20/50 Bullish Cross",
-            "Cross50_200": "Golden Cross",
-        }.get(cross_col, "Bullish Cross")
-        fig.add_trace(
-            go.Scatter(
-                x=marks["Date"],
-                y=marks["Close"],
-                mode="markers",
-                name=label,
-                marker={
-                    "symbol": "triangle-up",
-                    "size": 9,
-                    "color": "#26c281",
-                    "line": {"color": "#080a0d", "width": 1},
-                },
-            ),
-            row=1,
-            col=1,
-        )
+        label={"Cross9_21":"9/21 Bullish Cross", "Cross20_50":"20/50 Bullish Cross", "Cross50_200":"Golden Cross"}.get(cross_col,"Bullish Cross")
+        fig.add_trace(go.Scatter(
+            x=marks["Date"], y=marks["Close"], mode="markers", name=label,
+            marker={"symbol":"triangle-up","size":9,"color":"#26c281","line":{"color":"#080a0d","width":1}},
+        ), row=1, col=1)
+
+    if "Volume" in chart.columns:
+        fig.add_trace(go.Bar(x=chart["Date"], y=chart["Volume"], name="Volume", marker_color="#64748b"), row=2, col=1)
+    if "VolumeSMA20" in chart.columns:
+        fig.add_trace(go.Scatter(x=chart["Date"], y=chart["VolumeSMA20"], mode="lines", name="20D Avg Vol", line={"width":1.3,"color":"#f0a51a"}), row=2, col=1)
 
     if rsi_col in chart.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=chart["Date"],
-                y=chart[rsi_col],
-                mode="lines",
-                name=rsi_col,
-                line={"width": 1.7, "color": "#8ab4ff"},
-            ),
-            row=2,
-            col=1,
-        )
-        for level, label in (rsi_lines or [(30, "RSI 30"), (70, "RSI 70")]):
-            fig.add_hline(
-                y=level,
-                row=2,
-                col=1,
-                line_dash="dot",
-                line_color="#46515f",
-                line_width=1,
-                annotation_text=label,
-                annotation_position="top left",
-                annotation_font={"size": 9, "color": "#7f8b99"},
-            )
+        fig.add_trace(go.Scatter(x=chart["Date"], y=chart[rsi_col], mode="lines", name=rsi_col, line={"width":1.7,"color":"#8ab4ff"}), row=3, col=1)
+        for level,label in (rsi_lines or [(30,"RSI 30"),(70,"RSI 70")]):
+            fig.add_hline(y=level,row=3,col=1,line_dash="dot",line_color="#46515f",line_width=1,
+                          annotation_text=label,annotation_position="top left",annotation_font={"size":9,"color":"#7f8b99"})
 
-    fig.update_layout(
-        height=610,
-        margin={"l": 8, "r": 8, "t": 40, "b": 10},
-        paper_bgcolor="#080a0d",
-        plot_bgcolor="#080a0d",
-        font={"family": "Helvetica, Arial, sans-serif", "color": "#e9eef3"},
-        legend={"orientation": "h", "y": 1.03, "x": 0, "font": {"size": 10}},
-        hovermode="x unified",
-        xaxis_rangeslider_visible=False,
-        xaxis2_rangeslider_visible=False,
-    )
-    fig.update_xaxes(gridcolor="#1d232b", linecolor="#252c35", showline=False, zeroline=False)
-    fig.update_yaxes(gridcolor="#1d232b", linecolor="#252c35", showline=False, zeroline=False, row=1, col=1)
-    fig.update_yaxes(
-        gridcolor="#1d232b",
-        linecolor="#252c35",
-        showline=False,
-        zeroline=False,
-        range=[0, 100],
-        title_text="RSI",
-        title_font={"size": 10, "color": "#8c98a6"},
-        row=2,
-        col=1,
-    )
+    fig.update_layout(height=690, margin={"l":8,"r":8,"t":40,"b":10}, paper_bgcolor="#080a0d",
+        plot_bgcolor="#080a0d", font={"family":"Helvetica, Arial, sans-serif","color":"#e9eef3"},
+        legend={"orientation":"h","y":1.03,"x":0,"font":{"size":10}}, hovermode="x unified",
+        xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False, xaxis3_rangeslider_visible=False)
+    for row in (1,2,3):
+        fig.update_yaxes(gridcolor="#1d232b",linecolor="#252c35",showline=False,zeroline=False,row=row,col=1)
+    fig.update_yaxes(range=[0,100], title_text="RSI", title_font={"size":10,"color":"#8c98a6"}, row=3,col=1)
     return fig
 
 
 # -------------------------------------------------------------------
+# Pages# -------------------------------------------------------------------
 # Pages
 # -------------------------------------------------------------------
 
@@ -778,476 +702,151 @@ def scan_page():
 
 def strategy_page(strategy: str):
     require_scan()
-    snapshot = st.session_state["snapshot"]
+    snapshot = st.session_state["snapshot"].copy()
     indicators = st.session_state["indicators"]
-    prices = st.session_state["prices"]
 
     titles = {
-        "regime": (
-            "Market Regime",
-            "Long-term trend context using 50/200 SMA.",
-        ),
-        "momentum": (
-            "9/21 EMA Momentum",
-            "Short-term direction and fresh momentum turns.",
-        ),
-        "swing": (
-            "20/50 Swing Structure",
-            "Medium-term trend alignment.",
-        ),
-        "pullback": (
-            "EMA 255 Pullback",
-            "Oversold price near the long-term EMA.",
-        ),
+        "regime": ("Market Regime", "Long-term trend context using 50/200 SMA."),
+        "momentum": ("9/21 EMA Momentum", "Short-term direction, fresh crosses and volume confirmation."),
+        "swing": ("20/50 Swing Structure", "Medium-term alignment with relative-strength context."),
+        "pullback": ("EMA 255 Pullback", "Oversold price near long-term support with quality context."),
     }
-
     title, subtitle = titles[strategy]
     terminal_header(title, subtitle)
 
     explanations = {
-        "regime": (
-            "How to use Market Health",
-            "This is the background environment. It asks whether the long-term structure is supportive.",
-            [
-                "Bullish structure means the 50-day average is above the 200-day average.",
-                "Use this as context, not as a standalone buy signal.",
-            ],
-        ),
-        "momentum": (
-            "How to use Momentum",
-            "This page finds short-term changes in direction using the 9 and 21 EMA.",
-            [
-                "Fresh Cross means the 9 EMA has recently crossed above the 21 EMA.",
-                "Bullish Momentum means the 9 EMA is currently above the 21 EMA.",
-                "Use the chart to judge whether the move is fresh or already extended.",
-            ],
-        ),
-        "swing": (
-            "How to use Swing",
-            "This page looks for medium-term alignment between the 20-day and 50-day averages.",
-            [
-                "A bullish structure means the faster average is above the slower average.",
-                "Check the long-term trend and chart before considering the setup.",
-            ],
-        ),
-        "pullback": (
-            "How to use Pullback",
-            "This page finds stocks that are short-term oversold and close to EMA 255.",
-            [
-                "RSI below 35 means the stock is short-term oversold.",
-                "Within ±2% of EMA 255 means price is close to the long-term reference.",
-                "A pullback can keep falling. Use the chart to look for stabilisation.",
-            ],
-        ),
+        "regime": ("How to use Market Regime", "Use this as market structure, not a standalone buy signal.", ["50 SMA above 200 SMA indicates bullish long-term structure.", "Check relative strength and liquidity before research."]),
+        "momentum": ("How to use Momentum", "This page separates a fresh cross from established momentum and shows whether volume confirms the move.", ["Fresh Cross is the 9 EMA moving above the 21 EMA.", "Volume Confirmed requires a positive day and at least 1.5x 20-day average volume.", "RS 3M percentile compares the stock with the scanned universe."]),
+        "swing": ("How to use Swing", "Medium-term structure using the 20 and 50 SMA.", ["Bullish means SMA 20 is above SMA 50.", "Use RS and liquidity to judge whether the trend has broader quality."]),
+        "pullback": ("How to use Pullback", "Oversold price near EMA 255 is a candidate, not an automatic buy.", ["RSI below 35 and within ±2% of EMA 255 trigger the setup.", "Bull regime, liquidity and relative strength provide context."]),
     }
+    g_title,g_copy,g_steps=explanations[strategy]
+    guide(g_title,g_copy,g_steps)
 
-    g_title, g_copy, g_steps = explanations[strategy]
-    guide(g_title, g_copy, g_steps)
-
+    filter_col, liquidity_col = st.columns([2,1])
+    with liquidity_col:
+        liquidity_filter = st.selectbox("Liquidity", ["All","₹1 Cr+","₹5 Cr+","₹25 Cr+"], index=0, key=f"liq_{strategy}")
     if strategy == "regime":
-        mask = snapshot["BullRegime"]
-        table = snapshot.loc[
-            mask,
-            [
-                "Symbol",
-                "Company",
-                "Close",
-                "SMA50",
-                "SMA200",
-                "DaysSince50_200",
-            ],
-        ].copy()
-
-        table["State"] = "BULLISH"
-
+        table=snapshot.loc[snapshot["BullRegime"]].copy()
+        columns=["Symbol","Company","Close","SMA50","SMA200","DaysSince50_200","RS3MPct","AvgTradedValue20","LiquidityBucket"]
+        table["State"]="BULLISH"
+        columns.append("State")
     elif strategy == "momentum":
-        mode = st.radio(
-            "View",
-            ["Fresh Cross", "Bullish Momentum", "Bearish Momentum"],
-            horizontal=True,
-        )
-
-        if mode == "Fresh Cross":
-            mask = snapshot["MomentumFresh"]
-        elif mode == "Bullish Momentum":
-            mask = snapshot["BullMomentum"]
-        else:
-            mask = ~snapshot["BullMomentum"]
-
-        table = snapshot.loc[
-            mask,
-            [
-                "Symbol",
-                "Company",
-                "Close",
-                "EMA9",
-                "EMA21",
-                "DaysSince9_21",
-                "RSI14",
-                "EMA255DistancePct",
-            ],
-        ].copy()
-
+        with filter_col:
+            mode=st.radio("View",["Fresh Cross","Bullish Momentum","Volume Confirmed","20D Breakout"],horizontal=True)
+        masks={"Fresh Cross":snapshot["MomentumFresh"],"Bullish Momentum":snapshot["BullMomentum"],"Volume Confirmed":snapshot["VolumeConfirmedMomentum"],"20D Breakout":snapshot["Breakout20"]}
+        table=snapshot.loc[masks[mode]].copy()
+        columns=["Symbol","Company","Close","EMA9","EMA21","DaysSince9_21","RSI14","RS3MPct","VolumeRatio","AvgTradedValue20","LiquidityBucket","ATRPercent"]
     elif strategy == "swing":
-        mask = snapshot["BullSwing"]
-        table = snapshot.loc[
-            mask,
-            [
-                "Symbol",
-                "Company",
-                "Close",
-                "SMA20",
-                "SMA50",
-                "DaysSince20_50",
-                "RSI14",
-                "EMA255DistancePct",
-            ],
-        ].copy()
-
+        table=snapshot.loc[snapshot["BullSwing"]].copy()
+        columns=["Symbol","Company","Close","SMA20","SMA50","DaysSince20_50","RSI14","RS3MPct","RS6MPct","VolumeRatio","AvgTradedValue20","ATRPercent"]
     else:
-        mask = snapshot["Pullback"]
-        table = snapshot.loc[
-            mask,
-            [
-                "Symbol",
-                "Company",
-                "Close",
-                "RSI14",
-                "EMA255DistancePct",
-                "BullRegime",
-                "BullSwing",
-                "BullMomentum",
-            ],
-        ].copy()
+        table=snapshot.loc[snapshot["Pullback"]].copy()
+        columns=["Symbol","Company","Close","RSI14","EMA255DistancePct","BullRegime","BullSwing","RS3MPct","VolumeRatio","AvgTradedValue20","LiquidityBucket","ATRPercent"]
 
-    st.metric(
-        "QUALIFYING STOCKS",
-        f"{len(table):,}",
-    )
+    thresholds={"All":0,"₹1 Cr+":1_00_00_000,"₹5 Cr+":5_00_00_000,"₹25 Cr+":25_00_00_000}
+    table=table.loc[table["AvgTradedValue20"].fillna(0)>=thresholds[liquidity_filter], columns].copy()
+    st.metric("QUALIFYING STOCKS", f"{len(table):,}")
 
-    search = st.text_input(
-        "Search",
-        placeholder="Symbol or company",
-    )
-
+    search=st.text_input("Search",placeholder="Symbol or company",key=f"search_{strategy}")
     if search:
-        mask_text = (
-            table["Symbol"].str.contains(search, case=False, na=False)
-            | table["Company"].str.contains(search, case=False, na=False)
-        )
-        table = table.loc[mask_text]
+        table=table.loc[table["Symbol"].str.contains(search,case=False,na=False)|table["Company"].str.contains(search,case=False,na=False)]
+    st.dataframe(table,use_container_width=True,hide_index=True,height=520,column_config={
+        "RS3MPct":st.column_config.NumberColumn("RS 3M %ile",format="%.0f"),
+        "RS6MPct":st.column_config.NumberColumn("RS 6M %ile",format="%.0f"),
+        "VolumeRatio":st.column_config.NumberColumn("Volume x",format="%.2f"),
+        "AvgTradedValue20":st.column_config.NumberColumn("20D Traded Value",format="₹ %.0f"),
+        "ATRPercent":st.column_config.NumberColumn("ATR %",format="%.2f%%"),
+    })
 
-    st.dataframe(
-        table,
-        use_container_width=True,
-        hide_index=True,
-        height=520,
-    )
-
-    st.markdown('<div class="section-kicker">Chart console</div>', unsafe_allow_html=True)
-
-    show_chart = st.toggle(
-        "SHOW STRATEGY CHART",
-        value=True,
-        key=f"chart_toggle_{strategy}",
-    )
-
+    st.markdown('<div class="section-kicker">Chart console</div>',unsafe_allow_html=True)
+    show_chart=st.toggle("SHOW STRATEGY CHART",value=True,key=f"chart_toggle_{strategy}")
     if show_chart and not table.empty:
-        chart_col_1, chart_col_2 = st.columns([2, 1])
-
-        with chart_col_1:
-            chosen = st.selectbox(
-                "Select stock",
-                table["Symbol"].tolist(),
-                key=f"chart_stock_{strategy}",
-            )
-
-        with chart_col_2:
-            chart_days = st.selectbox(
-                "Chart window",
-                [90, 180, 252, 365],
-                index=1,
-                key=f"chart_days_{strategy}",
-            )
-
-        row = snapshot.loc[snapshot["Symbol"] == chosen].iloc[0]
-        frame = indicators.loc[
-            indicators["Yahoo Symbol"] == row["Yahoo Symbol"]
-        ].copy()
-
-        if strategy == "regime":
-            overlays = ["SMA50", "SMA200"]
-            crosses = ["Cross50_200"]
-            rsi_levels = [(30, "RSI 30"), (70, "RSI 70")]
-            chart_note = "50/200 regime + RSI context"
-        elif strategy == "momentum":
-            overlays = ["EMA9", "EMA21", "EMA255"]
-            crosses = ["Cross9_21"]
-            rsi_levels = [(50, "RSI 50"), (70, "RSI 70")]
-            chart_note = "9/21 momentum + EMA 255 trend + RSI"
-        elif strategy == "swing":
-            overlays = ["SMA20", "SMA50", "EMA255"]
-            crosses = ["Cross20_50"]
-            rsi_levels = [(50, "RSI 50"), (70, "RSI 70")]
-            chart_note = "20/50 swing structure + EMA 255 + RSI"
-        else:
-            overlays = ["EMA255"]
-            crosses = []
-            rsi_levels = [(35, "BUY ZONE 35"), (50, "RSI 50"), (70, "RSI 70")]
-            chart_note = "EMA 255 pullback + RSI buy-zone"
-
-        st.caption(chart_note)
-        st.plotly_chart(
-            market_chart(
-                frame,
-                chosen,
-                overlays,
-                rsi_col="RSI14",
-                days=int(chart_days),
-                cross_columns=crosses,
-                rsi_lines=rsi_levels,
-            ),
-            use_container_width=True,
-            config={"displaylogo": False, "scrollZoom": True},
-        )
+        c1,c2=st.columns([2,1])
+        with c1: chosen=st.selectbox("Select stock",table["Symbol"].tolist(),key=f"chart_stock_{strategy}")
+        with c2: chart_days=st.selectbox("Chart window",[90,180,252,365],index=1,key=f"chart_days_{strategy}")
+        row=snapshot.loc[snapshot["Symbol"]==chosen].iloc[0]
+        frame=indicators.loc[indicators["Yahoo Symbol"]==row["Yahoo Symbol"]].copy()
+        if strategy=="regime": overlays=["SMA50","SMA200"]; crosses=["Cross50_200"]; levels=[(30,"RSI 30"),(70,"RSI 70")]
+        elif strategy=="momentum": overlays=["EMA9","EMA21","EMA255"]; crosses=["Cross9_21"]; levels=[(50,"RSI 50"),(70,"RSI 70")]
+        elif strategy=="swing": overlays=["SMA20","SMA50","EMA255"]; crosses=["Cross20_50"]; levels=[(50,"RSI 50"),(70,"RSI 70")]
+        else: overlays=["EMA255"]; crosses=[]; levels=[(35,"BUY ZONE 35"),(50,"RSI 50"),(70,"RSI 70")]
+        st.caption("Price structure, 20-day average volume and RSI are shown together.")
+        st.plotly_chart(market_chart(frame,chosen,overlays,rsi_col="RSI14",days=int(chart_days),cross_columns=crosses,rsi_lines=levels),use_container_width=True,config={"displaylogo":False,"scrollZoom":True})
 
 
 def convergence_page():
     require_scan()
-    df = st.session_state["convergence"].copy()
+    df=st.session_state["convergence"].copy()
+    terminal_header("Confluence","Setup-aware ranking. Trend, pullback, fresh momentum and breakout paths are evaluated separately.")
 
-    terminal_header(
-        "Convergence Engine",
-        "Trend and entry conditions without double-counting related signals.",
-    )
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("ACTIVE SETUPS",f"{int((df['Setup']!='No active setup').sum()):,}")
+    c2.metric("SCORE 80+",f"{int((df['ConvergenceScore']>=80).sum()):,}")
+    c3.metric("VOLUME BREAKOUTS",f"{int(df['Breakout20'].sum()):,}")
+    c4.metric("LIQUID",f"{int(df['LiquidityEligible'].sum()):,}")
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric(
-        "HIGH CONVICTION",
-        f"{int((df['ConvergenceScore'] >= 65).sum()):,}",
-    )
-    c2.metric(
-        "STRONG TREND",
-        f"{int((df['TrendScore'] >= 60).sum()):,}",
-    )
-    c3.metric(
-        "PULLBACK SETUPS",
-        f"{int(df['Pullback'].sum()):,}",
-    )
+    f1,f2=st.columns(2)
+    with f1: min_score=st.slider("Minimum setup score",0,100,60,5)
+    with f2: setup_filter=st.selectbox("Setup type",["All"]+sorted([x for x in df['Setup'].dropna().unique() if x!='No active setup']))
+    output=df.loc[(df["ConvergenceScore"]>=min_score)&(df["Setup"]!="No active setup")].copy()
+    if setup_filter!="All": output=output.loc[output["Setup"]==setup_filter]
+    cols=["Symbol","Company","Setup","Close","ConvergenceScore","TrendContinuationScore","PullbackScore","FreshMomentumScore","BreakoutScore","RS3MPct","VolumeRatio","LiquidityBucket","ATRPercent","RSI14","EMA255DistancePct"]
+    output=output[cols].copy().reset_index(drop=True)
+    output.insert(0,"Rank",range(1,len(output)+1))
+    st.dataframe(output,use_container_width=True,hide_index=True,height=560)
+    st.download_button("EXPORT CONFLUENCE CSV",data=output.to_csv(index=False).encode(),file_name="nifty_total_market_confluence.csv",mime="text/csv")
 
-    min_score = st.slider(
-        "Minimum convergence score",
-        0,
-        100,
-        65,
-        5,
-    )
-
-    output = df.loc[
-        df["ConvergenceScore"] >= min_score,
-        [
-            "Symbol",
-            "Company",
-            "Close",
-            "ConvergenceScore",
-            "TrendScore",
-            "EntryScore",
-            "Setup",
-            "BullRegime",
-            "BullSwing",
-            "BullMomentum",
-            "Pullback",
-            "RSI14",
-            "EMA255DistancePct",
-        ],
-    ].copy()
-
-    output.insert(
-        0,
-        "Rank",
-        range(1, len(output) + 1),
-    )
-
-    st.dataframe(
-        output,
-        use_container_width=True,
-        hide_index=True,
-        height=560,
-    )
-
-    st.download_button(
-        "EXPORT CONVERGENCE CSV",
-        data=output.to_csv(index=False).encode(),
-        file_name="nifty_total_market_convergence.csv",
-        mime="text/csv",
-    )
-
-    st.markdown('<div class="section-kicker">Convergence chart</div>', unsafe_allow_html=True)
-    show_chart = st.toggle(
-        "SHOW CONVERGENCE CHART",
-        value=True,
-        key="chart_toggle_convergence",
-    )
-
-    if show_chart and not output.empty:
-        selected = st.selectbox(
-            "Select stock",
-            output["Symbol"].tolist(),
-            key="chart_stock_convergence",
-        )
-        row = df.loc[df["Symbol"] == selected].iloc[0]
-        frame = st.session_state["indicators"].loc[
-            st.session_state["indicators"]["Yahoo Symbol"] == row["Yahoo Symbol"]
-        ].copy()
-        st.caption("All major moving averages + crossover markers + RSI 14")
-        st.plotly_chart(
-            market_chart(
-                frame,
-                selected,
-                ["EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255"],
-                rsi_col="RSI14",
-                days=252,
-                cross_columns=["Cross9_21", "Cross20_50", "Cross50_200"],
-                rsi_lines=[(30, "RSI 30"), (50, "RSI 50"), (70, "RSI 70")],
-            ),
-            use_container_width=True,
-            config={"displaylogo": False, "scrollZoom": True},
-        )
+    st.markdown('<div class="section-kicker">Confluence chart</div>',unsafe_allow_html=True)
+    if st.toggle("SHOW CONVERGENCE CHART",value=True,key="chart_toggle_convergence") and not output.empty:
+        selected=st.selectbox("Select stock",output["Symbol"].tolist(),key="chart_stock_convergence")
+        row=df.loc[df["Symbol"]==selected].iloc[0]
+        frame=st.session_state["indicators"].loc[st.session_state["indicators"]["Yahoo Symbol"]==row["Yahoo Symbol"]].copy()
+        st.plotly_chart(market_chart(frame,selected,["EMA9","EMA21","SMA20","SMA50","SMA200","EMA255"],rsi_col="RSI14",days=252,cross_columns=["Cross9_21","Cross20_50","Cross50_200"],rsi_lines=[(30,"RSI 30"),(35,"BUY ZONE 35"),(50,"RSI 50"),(70,"RSI 70")]),use_container_width=True,config={"displaylogo":False,"scrollZoom":True})
 
 
 def buying_list_page():
     require_scan()
-    df = st.session_state["convergence"].copy()
-
-    terminal_header(
-        "Final Buying List",
-        "Research shortlist. Fundamentals are fetched only for finalists.",
-    )
-
-    shortlist = df.loc[
-        (df["TrendScore"] >= 60)
-        & (
-            (df["EntryScore"] >= 15)
-            | df["Pullback"]
-            | df["MomentumFresh"]
-        )
-    ].copy()
-
-    shortlist = shortlist.sort_values(
-        ["ConvergenceScore", "TrendScore", "EntryScore"],
-        ascending=False,
-    ).head(25)
-
+    df=st.session_state["convergence"].copy()
+    terminal_header("Final Buy List","Liquid, high-quality research candidates. This is a shortlist, not an automated buy recommendation.")
+    min_score=st.slider("Minimum shortlist score",60,100,70,5,key="buy_min_score")
+    shortlist=df.loc[(df["Setup"]!="No active setup")&(df["LiquidityEligible"])&(df["ConvergenceScore"]>=min_score)].copy()
+    shortlist=shortlist.sort_values(["ConvergenceScore","RS3MPct","AvgTradedValue20"],ascending=False,na_position="last").head(25)
     if shortlist.empty:
-        st.info(
-            "No stocks currently meet the final shortlist rules."
-        )
+        st.info("No stocks currently meet the shortlist rules.")
         return
-
-    rows = []
-
-    with st.spinner(
-        f"Fetching fundamentals for {len(shortlist)} finalists..."
-    ):
-        for _, row in shortlist.iterrows():
-            fund = fundamental_snapshot(row["Yahoo Symbol"])
-
-            rows.append(
-                {
-                    "Symbol": row["Symbol"],
-                    "Company": row["Company"],
-                    "Setup": row["Setup"],
-                    "Score": int(row["ConvergenceScore"]),
-                    "Trend": int(row["TrendScore"]),
-                    "Entry": int(row["EntryScore"]),
-                    "RSI": round(float(row["RSI14"]), 2),
-                    "EMA255 Dist %": round(
-                        float(row["EMA255DistancePct"]),
-                        2,
-                    ),
-                    "P/E": fund["PE"],
-                    "P/B": fund["PB"],
-                    "Margin %": fund["Profit Margin %"],
-                    "Debt/Equity": fund["Debt/Equity"],
-                    "EV/EBITDA": fund["EV/EBITDA"],
-                    "Market Cap": fund["Market Cap"],
-                    "Yahoo Symbol": row["Yahoo Symbol"],
-                }
-            )
-
-    final = pd.DataFrame(rows)
-
-    for column in [
-        "P/E",
-        "P/B",
-        "Margin %",
-        "Debt/Equity",
-        "EV/EBITDA",
-    ]:
-        final[column] = pd.to_numeric(
-            final[column],
-            errors="coerce",
-        ).round(2)
-
-    final = final.reset_index(drop=True)
-
-    st.metric(
-        "FINAL RESEARCH CANDIDATES",
-        f"{len(final):,}",
-    )
-
-    st.dataframe(
-        final.drop(columns=["Yahoo Symbol"]),
-        use_container_width=True,
-        hide_index=True,
-        height=560,
-    )
-
-    st.download_button(
-        "EXPORT FINAL BUYING LIST",
-        data=final.drop(columns=["Yahoo Symbol"]).to_csv(index=False).encode(),
-        file_name="nifty_total_market_buying_list.csv",
-        mime="text/csv",
-    )
-
+    rows=[]
+    with st.spinner(f"Fetching fundamentals for {len(shortlist)} finalists..."):
+        for _,row in shortlist.iterrows():
+            fund=fundamental_snapshot(row["Yahoo Symbol"])
+            rows.append({
+                "Symbol":row["Symbol"],"Company":row["Company"],"Setup":row["Setup"],
+                "Score":int(row["ConvergenceScore"]),"RS 3M %ile":round(float(row["RS3MPct"]),1) if pd.notna(row["RS3MPct"]) else None,
+                "Volume x":round(float(row["VolumeRatio"]),2) if pd.notna(row["VolumeRatio"]) else None,
+                "Liquidity":row["LiquidityBucket"],"RSI":round(float(row["RSI14"]),2) if pd.notna(row["RSI14"]) else None,
+                "EMA255 Dist %":round(float(row["EMA255DistancePct"]),2) if pd.notna(row["EMA255DistancePct"]) else None,
+                "ATR %":round(float(row["ATRPercent"]),2) if pd.notna(row["ATRPercent"]) else None,
+                "Gap %":round(float(row["GapPct"]),2) if pd.notna(row["GapPct"]) else None,
+                "P/E":fund["PE"],"Revenue Growth %":fund["Revenue Growth %"],"Net Profit Margin %":fund["Profit Margin %"],
+                "Debt/Equity":fund["Debt/Equity"],"EV/EBITDA":fund["EV/EBITDA"],"Market Cap":fund["Market Cap"],"Yahoo Symbol":row["Yahoo Symbol"],
+            })
+    final=pd.DataFrame(rows)
+    for col in ["P/E","Revenue Growth %","Net Profit Margin %","Debt/Equity","EV/EBITDA"]:
+        final[col]=pd.to_numeric(final[col],errors="coerce").round(2)
+    final.insert(0,"Rank",range(1,len(final)+1))
+    st.metric("FINAL RESEARCH CANDIDATES",f"{len(final):,}")
+    st.dataframe(final.drop(columns=["Yahoo Symbol"]),use_container_width=True,hide_index=True,height=560)
+    st.download_button("EXPORT FINAL BUY LIST",data=final.drop(columns=["Yahoo Symbol"]).to_csv(index=False).encode(),file_name="nifty_total_market_buying_list.csv",mime="text/csv")
     st.divider()
-
-    show_chart = st.toggle(
-        "SHOW CHART FOR BUYING LIST STOCK",
-        value=False,
-    )
-
-    if show_chart:
-        selected = st.selectbox(
-            "Stock",
-            final["Symbol"].tolist(),
-        )
-
-        row = final.loc[
-            final["Symbol"] == selected
-        ].iloc[0]
-
-        frame = st.session_state["indicators"].loc[
-            st.session_state["indicators"]["Yahoo Symbol"] == row["Yahoo Symbol"]
-        ].copy()
-
-        st.caption("All major moving averages + crossover markers + RSI 14")
-        st.plotly_chart(
-            market_chart(
-                frame,
-                selected,
-                ["EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255"],
-                rsi_col="RSI14",
-                days=252,
-                cross_columns=["Cross9_21", "Cross20_50", "Cross50_200"],
-                rsi_lines=[(30, "RSI 30"), (35, "BUY ZONE 35"), (50, "RSI 50"), (70, "RSI 70")],
-            ),
-            use_container_width=True,
-            config={"displaylogo": False, "scrollZoom": True},
-        )
+    if st.toggle("SHOW CHART FOR BUY LIST STOCK",value=False,key="buy_chart_toggle"):
+        selected=st.selectbox("Stock",final["Symbol"].tolist(),key="buy_chart_stock")
+        row=final.loc[final["Symbol"]==selected].iloc[0]
+        frame=st.session_state["indicators"].loc[st.session_state["indicators"]["Yahoo Symbol"]==row["Yahoo Symbol"]].copy()
+        st.plotly_chart(market_chart(frame,selected,["EMA9","EMA21","SMA20","SMA50","SMA200","EMA255"],rsi_col="RSI14",days=252,cross_columns=["Cross9_21","Cross20_50","Cross50_200"],rsi_lines=[(30,"RSI 30"),(35,"BUY ZONE 35"),(50,"RSI 50"),(70,"RSI 70")]),use_container_width=True,config={"displaylogo":False,"scrollZoom":True})
 
 
 # -------------------------------------------------------------------
+# Navigation# -------------------------------------------------------------------
 # Navigation
 # -------------------------------------------------------------------
 
