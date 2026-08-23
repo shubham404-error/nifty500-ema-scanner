@@ -687,7 +687,7 @@ with st.expander("Scan details"):
             "Stocks with price data": meta["downloaded"],
             "Failed tickers": len(meta["failures"]),
             "EMA period": current_ema,
-            "RSI period": meta["rsi_period"],
+            "RSI period": meta.get("rsi_period", 14),
             "Signal definition": meta["touch_label"],
             "History downloaded": (
                 f"{meta['history_years']} years"
