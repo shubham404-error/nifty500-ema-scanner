@@ -699,6 +699,19 @@ def scan_page():
                 progress_callback=update,
             )
 
+            # Public free data can occasionally miss a small number of symbols.
+            # Keep the scan usable above the hard reliability floor, while making
+            # partial coverage explicit to the user.
+            expected_symbols = len(universe)
+            returned_symbols = prices["Yahoo Symbol"].nunique()
+            coverage = returned_symbols / max(expected_symbols, 1)
+            if coverage < 0.95:
+                st.warning(
+                    f"Partial market-data coverage: {returned_symbols}/{expected_symbols} "
+                    f"({coverage:.1%}). The scan is using the available completed-session "
+                    "data; missing or stale symbols were excluded."
+                )
+
             if prices.empty:
                 st.error("No usable market data was returned.")
                 st.stop()
