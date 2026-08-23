@@ -6,7 +6,7 @@ import time
 import random
 from datetime import date, timedelta
 from typing import Callable
-
+import re
 import pandas as pd
 import requests
 import yfinance as yf
