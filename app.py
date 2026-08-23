@@ -21,9 +21,9 @@ from engine import (
 
 st.set_page_config(
     page_title="Nifty Market Terminal",
-    page_icon="▦",
+    page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 
@@ -256,6 +256,36 @@ hr {
 .product-pill.accent {
     color: #f0a51a;
     border-color: #735919;
+}
+
+
+@media (max-width: 768px) {
+    .block-container {
+        padding-top: 1.25rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+
+    .terminal-topbar {
+        margin-top: 0;
+        padding: 14px 15px;
+    }
+
+    .terminal-brand {
+        font-size: 22px;
+    }
+
+    .page-title {
+        font-size: 30px;
+    }
+
+    .page-copy {
+        font-size: 14px;
+    }
+
+    [data-testid="stSidebar"] {
+        width: min(86vw, 360px);
+    }
 }
 
 </style>
@@ -1285,7 +1315,7 @@ pages = {
 
 pg = st.navigation(
     pages,
-    position="top",
+    position="sidebar",
 )
 
 with st.sidebar:
