@@ -22,16 +22,16 @@ NSE_HEADERS = {
 
 # NSE's current Total Market page defines the universe as Nifty 500 +
 # Nifty Microcap 250. The app still validates the final count dynamically.
-TOTAL_MARKET_URLS = []
+TOTAL_MARKET_URLS = [
+    "https://nsearchives.nseindia.com/content/indices/ind_niftytotalmarketlist.csv",
+]
 
 NIFTY500_URLS = [
-    "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
     "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
 ]
 
 MICROCAP250_URLS = [
-    "https://www.niftyindices.com/IndexConstituent/ind_niftymicrocap250_list.csv",
-    "https://nsearchives.nseindia.com/content/indices/ind_niftymicrocap250_list.csv",
+    "https://nsearchives.nseindia.com/content/indices/ind_niftymicrocap250list.csv",
 ]
 
 
@@ -111,16 +111,21 @@ def load_universe(universe_name: str = "NIFTY TOTAL MARKET") -> pd.DataFrame:
     if universe_name == "NIFTY 500":
         return _read_nse_csv(NIFTY500_URLS)
 
-    # The official Total Market universe is Nifty 500 plus
-    # Nifty Microcap 250. Build it from the two public constituent files.
-    # This avoids relying on a non-public/unstable direct Total Market CSV URL.
+    # Try the direct Total Market constituent file first.
+    try:
+        direct = _read_nse_csv(TOTAL_MARKET_URLS)
+        if len(direct) >= 700:
+            return direct
+    except Exception:
+        pass
+
+    # Robust fallback. NSE states Total Market is Nifty 500 + Microcap 250.
     nifty500 = _read_nse_csv(NIFTY500_URLS)
     microcap = _read_nse_csv(MICROCAP250_URLS)
 
     result = (
         pd.concat([nifty500, microcap], ignore_index=True)
         .drop_duplicates("Symbol")
-        .sort_values("Symbol")
         .reset_index(drop=True)
     )
 
@@ -327,47 +332,73 @@ def calculate_indicators(
         )
 
         close = frame["Close"]
+        volume = pd.to_numeric(frame.get("Volume"), errors="coerce")
 
         frame["EMA9"] = close.ewm(span=9, adjust=False).mean()
         frame["EMA21"] = close.ewm(span=21, adjust=False).mean()
-
-        frame["SMA20"] = close.rolling(
-            20,
-            min_periods=20,
-        ).mean()
-
-        frame["SMA50"] = close.rolling(
-            50,
-            min_periods=50,
-        ).mean()
-
-        frame["SMA200"] = close.rolling(
-            200,
-            min_periods=200,
-        ).mean()
+        frame["SMA20"] = close.rolling(20, min_periods=20).mean()
+        frame["SMA50"] = close.rolling(50, min_periods=50).mean()
+        frame["SMA200"] = close.rolling(200, min_periods=200).mean()
 
         frame[f"EMA{ema_long}"] = close.ewm(
             span=ema_long,
             adjust=False,
             min_periods=ema_long,
         ).mean()
+        frame[f"RSI{rsi_period}"] = rsi_wilder(close, rsi_period)
 
-        frame[f"RSI{rsi_period}"] = rsi_wilder(
-            close,
-            rsi_period,
+        # Volatility. Wilder-style ATR using the same smoothing convention as RSI.
+        previous_close = close.shift(1)
+        true_range = pd.concat(
+            [
+                frame["High"] - frame["Low"],
+                (frame["High"] - previous_close).abs(),
+                (frame["Low"] - previous_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        frame["ATR14"] = true_range.ewm(
+            alpha=1 / 14,
+            adjust=False,
+            min_periods=14,
+        ).mean()
+        frame["ATRPct"] = frame["ATR14"] / close.replace(0, pd.NA) * 100
+
+        # Liquidity and participation. These are descriptive features and do not
+        # alter the existing strategy/convergence score.
+        frame["AvgVolume20"] = volume.rolling(20, min_periods=20).mean()
+        frame["VolumeRatio"] = volume / frame["AvgVolume20"].replace(0, pd.NA)
+        frame["TradedValue"] = close * volume
+        frame["AvgTradedValue20"] = frame["TradedValue"].rolling(
+            20,
+            min_periods=20,
+        ).mean()
+
+        # Fresh price context.
+        frame["DailyReturnPct"] = close.pct_change() * 100
+        frame["GapPct"] = (
+            (frame["Open"] - previous_close)
+            / previous_close.replace(0, pd.NA)
+            * 100
         )
+        frame["High20Prev"] = frame["High"].rolling(
+            20,
+            min_periods=20,
+        ).max().shift(1)
+        frame["Breakout20"] = close > frame["High20Prev"]
 
-        # Cross states. These use yesterday vs today, avoiding look-ahead.
+        for label, periods in [("Return1M", 21), ("Return3M", 63), ("Return6M", 126), ("Return12M", 252)]:
+            frame[label] = close.pct_change(periods=periods) * 100
+
+        # Cross states use yesterday versus today, avoiding look-ahead.
         frame["Cross9_21"] = (
             (frame["EMA9"] > frame["EMA21"])
             & (frame["EMA9"].shift(1) <= frame["EMA21"].shift(1))
         )
-
         frame["Cross20_50"] = (
             (frame["SMA20"] > frame["SMA50"])
             & (frame["SMA20"].shift(1) <= frame["SMA50"].shift(1))
         )
-
         frame["Cross50_200"] = (
             (frame["SMA50"] > frame["SMA200"])
             & (frame["SMA50"].shift(1) <= frame["SMA200"].shift(1))
@@ -382,16 +413,26 @@ def calculate_indicators(
             / frame[f"EMA{ema_long}"]
             * 100
         )
-
         frame["Pullback"] = (
             (frame[f"RSI{rsi_period}"] < 35)
             & (frame["EMA255DistancePct"].abs() <= 2)
         )
 
+        # Additive setup flags. Existing strategy scores remain unchanged.
+        frame["VolumeConfirmedMomentum"] = (
+            frame["BullMomentum"]
+            & (frame["DailyReturnPct"] > 0)
+            & (frame["VolumeRatio"] >= 1.5)
+        )
+        frame["VolumeBreakout20"] = (
+            frame["Breakout20"]
+            & (frame["VolumeRatio"] >= 1.5)
+            & frame["BullSwing"]
+        )
+
         frame["MomentumFresh"] = frame["Cross9_21"]
         frame["SwingFresh"] = frame["Cross20_50"]
         frame["RegimeFresh"] = frame["Cross50_200"]
-
         frame["Yahoo Symbol"] = ticker
         result_frames.append(frame)
 
@@ -412,48 +453,73 @@ def latest_snapshot(
         .set_index("Yahoo Symbol")[["Symbol", "Company"]]
         .to_dict("index")
     )
-
     rows = []
 
-    for ticker, frame in indicators.groupby(
-        "Yahoo Symbol",
-        sort=False,
-    ):
+    fields = [
+        "EMA9", "EMA21", "SMA20", "SMA50", "SMA200",
+        f"EMA{ema_long}", f"RSI{rsi_period}", "EMA255DistancePct",
+        "ATR14", "ATRPct", "AvgVolume20", "VolumeRatio",
+        "AvgTradedValue20", "DailyReturnPct", "GapPct",
+        "Return1M", "Return3M", "Return6M", "Return12M",
+    ]
+
+    for ticker, frame in indicators.groupby("Yahoo Symbol", sort=False):
         row = frame.sort_values("Date").iloc[-1]
         company = meta.get(
             ticker,
-            {
-                "Symbol": ticker.replace(".NS", ""),
-                "Company": "",
-            },
+            {"Symbol": ticker.replace(".NS", ""), "Company": ""},
+        )
+        output = {
+            "Symbol": company["Symbol"],
+            "Company": company["Company"],
+            "Yahoo Symbol": ticker,
+            "Date": row["Date"],
+            "Close": row["Close"],
+        }
+        for field in fields:
+            output[field] = row.get(field)
+        for field in [
+            "BullMomentum", "BullSwing", "BullRegime", "MomentumFresh",
+            "SwingFresh", "RegimeFresh", "Pullback",
+            "VolumeConfirmedMomentum", "VolumeBreakout20", "Breakout20",
+        ]:
+            output[field] = bool(row.get(field, False))
+        rows.append(output)
+
+    snapshot = pd.DataFrame(rows)
+
+    # Cross-sectional relative-strength percentiles. This adds a comparative
+    # dimension without introducing another network dependency into the live scan.
+    for return_col, rs_col in [
+        ("Return1M", "RS1MPercentile"),
+        ("Return3M", "RS3MPercentile"),
+        ("Return6M", "RS6MPercentile"),
+        ("Return12M", "RS12MPercentile"),
+    ]:
+        snapshot[rs_col] = (
+            snapshot[return_col]
+            .rank(pct=True, method="average")
+            .mul(100)
         )
 
-        rows.append(
-            {
-                "Symbol": company["Symbol"],
-                "Company": company["Company"],
-                "Yahoo Symbol": ticker,
-                "Date": row["Date"],
-                "Close": row["Close"],
-                "EMA9": row["EMA9"],
-                "EMA21": row["EMA21"],
-                "SMA20": row["SMA20"],
-                "SMA50": row["SMA50"],
-                "SMA200": row["SMA200"],
-                f"EMA{ema_long}": row[f"EMA{ema_long}"],
-                f"RSI{rsi_period}": row[f"RSI{rsi_period}"],
-                "EMA255DistancePct": row["EMA255DistancePct"],
-                "BullMomentum": bool(row["BullMomentum"]),
-                "BullSwing": bool(row["BullSwing"]),
-                "BullRegime": bool(row["BullRegime"]),
-                "MomentumFresh": bool(row["MomentumFresh"]),
-                "SwingFresh": bool(row["SwingFresh"]),
-                "RegimeFresh": bool(row["RegimeFresh"]),
-                "Pullback": bool(row["Pullback"]),
-            }
-        )
+    def liquidity_bucket(value):
+        if pd.isna(value):
+            return "Unknown"
+        if value >= 25e7:
+            return "Highly Liquid"
+        if value >= 10e7:
+            return "Liquid"
+        if value >= 5e7:
+            return "Tradeable"
+        if value >= 1e7:
+            return "Low Liquidity"
+        return "Illiquid"
 
-    return pd.DataFrame(rows)
+    snapshot["LiquidityBucket"] = snapshot["AvgTradedValue20"].map(
+        liquidity_bucket
+    )
+    snapshot["LiquidEligible"] = snapshot["AvgTradedValue20"] >= 5e7
+    return snapshot
 
 
 def add_days_since_cross(
