@@ -282,36 +282,6 @@ def require_scan():
         st.stop()
 
 
-def apply_liquidity_filter(df: pd.DataFrame, minimum: str) -> pd.DataFrame:
-    thresholds = {
-        "All stocks": 0,
-        "₹1 Cr+ avg traded value": 1e7,
-        "₹5 Cr+ avg traded value": 5e7,
-        "₹10 Cr+ avg traded value": 10e7,
-        "₹25 Cr+ avg traded value": 25e7,
-    }
-    threshold = thresholds.get(minimum, 0)
-    if threshold <= 0 or "AvgTradedValue20" not in df.columns:
-        return df
-    return df.loc[df["AvgTradedValue20"].fillna(0) >= threshold].copy()
-
-
-def liquidity_control(key: str) -> str:
-    return st.selectbox(
-        "Liquidity filter",
-        [
-            "All stocks",
-            "₹1 Cr+ avg traded value",
-            "₹5 Cr+ avg traded value",
-            "₹10 Cr+ avg traded value",
-            "₹25 Cr+ avg traded value",
-        ],
-        index=0,
-        key=key,
-        help="20-day average of Close × Volume. This filter does not change strategy scores.",
-    )
-
-
 def market_chart(
     frame: pd.DataFrame,
     symbol: str,
@@ -578,7 +548,7 @@ def scan_page():
         snapshot = st.session_state["snapshot"]
         failures = st.session_state.get("failures", [])
 
-        m1, m2, m3, m4, m5 = st.columns(5)
+        m1, m2, m3, m4 = st.columns(4)
         m1.metric("CONSTITUENTS", f"{len(st.session_state['universe']):,}")
         m2.metric("PRICE SERIES", f"{len(snapshot):,}")
         m3.metric(
@@ -589,24 +559,11 @@ def scan_page():
             "PULLBACK SETUPS",
             f"{int(snapshot['Pullback'].sum()):,}",
         )
-        m5.metric(
-            "LIQUID 20D AVG",
-            f"{int(snapshot['LiquidEligible'].sum()):,}",
-            help="Stocks with 20-day average traded value of at least ₹5 crore.",
-        )
 
         if failures:
             st.warning(
                 f"{len(failures)} symbols remained unresolved after retry."
             )
-
-        st.markdown('<div class="section-kicker">New market context</div>', unsafe_allow_html=True)
-        n1, n2, n3, n4 = st.columns(4)
-        n1.metric("VOLUME MOMENTUM", f"{int(snapshot['VolumeConfirmedMomentum'].sum()):,}")
-        n2.metric("VOLUME BREAKOUTS", f"{int(snapshot['VolumeBreakout20'].sum()):,}")
-        n3.metric("TOP RS 3M", f"{int((snapshot['RS3MPercentile'] >= 90).sum()):,}")
-        n4.metric("MEDIAN VOL RATIO", f"{snapshot['VolumeRatio'].median():.2f}x")
-        st.caption("Liquidity, relative strength, volume and ATR are currently descriptive features. Existing strategy and convergence scores are unchanged.")
 
         st.markdown('<div class="section-kicker">Data quality</div>', unsafe_allow_html=True)
 
@@ -701,11 +658,6 @@ def strategy_page(strategy: str):
                 "DaysSince9_21",
                 "RSI14",
                 "EMA255DistancePct",
-                "RS3MPercentile",
-                "VolumeRatio",
-                "AvgTradedValue20",
-                "ATRPct",
-                "VolumeConfirmedMomentum",
             ],
         ].copy()
 
@@ -722,11 +674,6 @@ def strategy_page(strategy: str):
                 "DaysSince20_50",
                 "RSI14",
                 "EMA255DistancePct",
-                "RS3MPercentile",
-                "VolumeRatio",
-                "AvgTradedValue20",
-                "ATRPct",
-                "VolumeBreakout20",
             ],
         ].copy()
 
@@ -743,15 +690,8 @@ def strategy_page(strategy: str):
                 "BullRegime",
                 "BullSwing",
                 "BullMomentum",
-                "RS3MPercentile",
-                "VolumeRatio",
-                "AvgTradedValue20",
-                "ATRPct",
             ],
         ].copy()
-
-    liquidity_choice = liquidity_control(f"liquidity_{strategy}")
-    table = apply_liquidity_filter(table, liquidity_choice)
 
     st.metric(
         "QUALIFYING STOCKS",
@@ -822,7 +762,6 @@ def convergence_page():
         "Convergence Engine",
         "Trend and entry conditions without double-counting related signals.",
     )
-    st.caption("Relative strength, volume, liquidity and ATR are shown for context. Current scoring remains unchanged while these features are validated.")
 
     c1, c2, c3 = st.columns(3)
     c1.metric(
@@ -862,12 +801,6 @@ def convergence_page():
             "Pullback",
             "RSI14",
             "EMA255DistancePct",
-            "RS3MPercentile",
-            "VolumeRatio",
-            "AvgTradedValue20",
-            "ATRPct",
-            "VolumeConfirmedMomentum",
-            "VolumeBreakout20",
         ],
     ].copy()
 
@@ -900,7 +833,6 @@ def buying_list_page():
         "Final Buying List",
         "Research shortlist. Fundamentals are fetched only for finalists.",
     )
-    st.caption("New context fields are additive. Liquidity, relative strength, volume and ATR do not alter the existing convergence score yet.")
 
     shortlist = df.loc[
         (df["TrendScore"] >= 60)
@@ -915,9 +847,6 @@ def buying_list_page():
         ["ConvergenceScore", "TrendScore", "EntryScore"],
         ascending=False,
     ).head(25)
-
-    shortlist_liquidity = liquidity_control("buying_list_liquidity")
-    shortlist = apply_liquidity_filter(shortlist, shortlist_liquidity)
 
     if shortlist.empty:
         st.info(
@@ -946,12 +875,6 @@ def buying_list_page():
                         float(row["EMA255DistancePct"]),
                         2,
                     ),
-                    "RS 3M %ile": round(float(row["RS3MPercentile"]), 1) if pd.notna(row["RS3MPercentile"]) else None,
-                    "Volume Ratio": round(float(row["VolumeRatio"]), 2) if pd.notna(row["VolumeRatio"]) else None,
-                    "20D Traded Value": round(float(row["AvgTradedValue20"]), 0) if pd.notna(row["AvgTradedValue20"]) else None,
-                    "ATR %": round(float(row["ATRPct"]), 2) if pd.notna(row["ATRPct"]) else None,
-                    "Volume Momentum": bool(row["VolumeConfirmedMomentum"]),
-                    "Volume Breakout": bool(row["VolumeBreakout20"]),
                     "P/E": fund["PE"],
                     "P/B": fund["PB"],
                     "Margin %": fund["Profit Margin %"],
@@ -1035,33 +958,68 @@ def buying_list_page():
 # Navigation
 # -------------------------------------------------------------------
 
+# Named wrapper functions are used instead of lambdas so every page has
+# a unique callable name and explicit URL path. This avoids duplicate
+# page-path errors in Streamlit navigation.
+
+def regime_page():
+    strategy_page("regime")
+
+
+def momentum_page():
+    strategy_page("momentum")
+
+
+def swing_page():
+    strategy_page("swing")
+
+
+def pullback_page():
+    strategy_page("pullback")
+
+
 pages = {
     "Overview": [
-        st.Page(home_page, title="Home", icon="🏠"),
+        st.Page(
+            home_page,
+            title="Home",
+            icon="🏠",
+            url_path="home",
+            default=True,
+        ),
     ],
     "Workflow": [
-        st.Page(scan_page, title="Scan Engine", icon="🔄"),
+        st.Page(
+            scan_page,
+            title="Scan Engine",
+            icon="🔄",
+            url_path="scan-engine",
+        ),
     ],
     "Strategies": [
         st.Page(
-            lambda: strategy_page("regime"),
+            regime_page,
             title="Market Regime",
             icon="📐",
+            url_path="market-regime",
         ),
         st.Page(
-            lambda: strategy_page("momentum"),
+            momentum_page,
             title="9/21 Momentum",
             icon="📈",
+            url_path="momentum-9-21",
         ),
         st.Page(
-            lambda: strategy_page("swing"),
+            swing_page,
             title="20/50 Swing",
             icon="📈",
+            url_path="swing-20-50",
         ),
         st.Page(
-            lambda: strategy_page("pullback"),
+            pullback_page,
             title="EMA 255 Pullback",
             icon="↔️",
+            url_path="ema-255-pullback",
         ),
     ],
     "Decision": [
@@ -1069,11 +1027,13 @@ pages = {
             convergence_page,
             title="Convergence",
             icon="🎯",
+            url_path="convergence",
         ),
         st.Page(
             buying_list_page,
             title="Final Buying List",
             icon="⭐",
+            url_path="buying-list",
         ),
     ],
 }
@@ -1081,7 +1041,6 @@ pages = {
 pg = st.navigation(
     pages,
     position="top",
-    expanded=False,
 )
 
 with st.sidebar:
