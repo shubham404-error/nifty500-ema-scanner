@@ -31,7 +31,6 @@ NIFTY500_URLS = [
 
 MICROCAP250_URLS = [
     "https://www.niftyindices.com/IndexConstituent/ind_niftymicrocap250_list.csv",
-    "https://nsearchives.nseindia.com/content/indices/ind_niftymicrocap250_list.csv",
 ]
 
 
@@ -305,84 +304,96 @@ def rsi_wilder(close: pd.Series, period: int = 14) -> pd.Series:
     return 100 - 100 / (1 + rs)
 
 
+# -------------------------------------------------------------------
+# Feature configuration
+# -------------------------------------------------------------------
+RS_PERIODS = {"1M": 21, "3M": 63, "6M": 126, "12M": 252}
+LIQUIDITY_THRESHOLD = 1_00_00_000  # ₹1 crore average daily traded value
+
+
+def _safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    return numerator / denominator.replace(0, pd.NA)
+
+
+def _liquidity_bucket(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "Unknown"
+    if value < 1_00_00_000:
+        return "Illiquid"
+    if value < 5_00_00_000:
+        return "Low Liquidity"
+    if value < 25_00_00_000:
+        return "Tradeable"
+    if value < 100_00_00_000:
+        return "Liquid"
+    return "Highly Liquid"
+
+
 def calculate_indicators(
     prices: pd.DataFrame,
     ema_long: int = 255,
     rsi_period: int = 14,
 ) -> pd.DataFrame:
+    """Calculate the shared technical, liquidity and quality feature set once."""
     if prices.empty:
         return pd.DataFrame()
 
+    required = {"Date", "Yahoo Symbol", "High", "Low", "Close"}
+    missing = required.difference(prices.columns)
+    if missing:
+        raise ValueError(f"Missing required OHLCV columns: {sorted(missing)}")
+
     result_frames = []
 
-    for ticker, frame in prices.groupby(
-        "Yahoo Symbol",
-        sort=False,
-    ):
-        frame = (
-            frame
-            .sort_values("Date")
-            .drop_duplicates("Date")
-            .copy()
-        )
-
-        close = frame["Close"]
+    for ticker, frame in prices.groupby("Yahoo Symbol", sort=False):
+        frame = frame.sort_values("Date").drop_duplicates("Date").copy()
+        close = pd.to_numeric(frame["Close"], errors="coerce")
+        high = pd.to_numeric(frame["High"], errors="coerce")
+        low = pd.to_numeric(frame["Low"], errors="coerce")
+        volume = pd.to_numeric(frame.get("Volume", pd.Series(index=frame.index, dtype=float)), errors="coerce")
 
         frame["EMA9"] = close.ewm(span=9, adjust=False).mean()
         frame["EMA21"] = close.ewm(span=21, adjust=False).mean()
-
-        frame["SMA20"] = close.rolling(
-            20,
-            min_periods=20,
-        ).mean()
-
-        frame["SMA50"] = close.rolling(
-            50,
-            min_periods=50,
-        ).mean()
-
-        frame["SMA200"] = close.rolling(
-            200,
-            min_periods=200,
-        ).mean()
-
+        frame["SMA20"] = close.rolling(20, min_periods=20).mean()
+        frame["SMA50"] = close.rolling(50, min_periods=50).mean()
+        frame["SMA200"] = close.rolling(200, min_periods=200).mean()
         frame[f"EMA{ema_long}"] = close.ewm(
-            span=ema_long,
-            adjust=False,
-            min_periods=ema_long,
+            span=ema_long, adjust=False, min_periods=ema_long
         ).mean()
+        frame[f"RSI{rsi_period}"] = rsi_wilder(close, rsi_period)
 
-        frame[f"RSI{rsi_period}"] = rsi_wilder(
-            close,
-            rsi_period,
+        # ATR 14. True Range uses the previous close, so no future data is used.
+        prev_close = close.shift(1)
+        true_range = pd.concat(
+            [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+        ).max(axis=1)
+        frame["ATR14"] = true_range.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        frame["ATRPercent"] = _safe_ratio(frame["ATR14"], close) * 100
+
+        # Volume and liquidity context.
+        frame["VolumeSMA20"] = volume.rolling(20, min_periods=20).mean()
+        frame["VolumeRatio"] = _safe_ratio(volume, frame["VolumeSMA20"])
+        frame["TradedValue"] = close * volume
+        frame["AvgTradedValue20"] = frame["TradedValue"].rolling(20, min_periods=20).mean()
+
+        # Cross states. Yesterday vs today only.
+        frame["Cross9_21"] = (frame["EMA9"] > frame["EMA21"]) & (
+            frame["EMA9"].shift(1) <= frame["EMA21"].shift(1)
         )
-
-        # Cross states. These use yesterday vs today, avoiding look-ahead.
-        frame["Cross9_21"] = (
-            (frame["EMA9"] > frame["EMA21"])
-            & (frame["EMA9"].shift(1) <= frame["EMA21"].shift(1))
+        frame["Cross20_50"] = (frame["SMA20"] > frame["SMA50"]) & (
+            frame["SMA20"].shift(1) <= frame["SMA50"].shift(1)
         )
-
-        frame["Cross20_50"] = (
-            (frame["SMA20"] > frame["SMA50"])
-            & (frame["SMA20"].shift(1) <= frame["SMA50"].shift(1))
-        )
-
-        frame["Cross50_200"] = (
-            (frame["SMA50"] > frame["SMA200"])
-            & (frame["SMA50"].shift(1) <= frame["SMA200"].shift(1))
+        frame["Cross50_200"] = (frame["SMA50"] > frame["SMA200"]) & (
+            frame["SMA50"].shift(1) <= frame["SMA200"].shift(1)
         )
 
         frame["BullMomentum"] = frame["EMA9"] > frame["EMA21"]
         frame["BullSwing"] = frame["SMA20"] > frame["SMA50"]
         frame["BullRegime"] = frame["SMA50"] > frame["SMA200"]
 
-        frame["EMA255DistancePct"] = (
-            (frame["Close"] - frame[f"EMA{ema_long}"])
-            / frame[f"EMA{ema_long}"]
-            * 100
-        )
-
+        frame["EMA255DistancePct"] = _safe_ratio(
+            close - frame[f"EMA{ema_long}"], frame[f"EMA{ema_long}"]
+        ) * 100
         frame["Pullback"] = (
             (frame[f"RSI{rsi_period}"] < 35)
             & (frame["EMA255DistancePct"].abs() <= 2)
@@ -391,6 +402,25 @@ def calculate_indicators(
         frame["MomentumFresh"] = frame["Cross9_21"]
         frame["SwingFresh"] = frame["Cross20_50"]
         frame["RegimeFresh"] = frame["Cross50_200"]
+
+        # Relative performance. Percentile ranking is applied across the scanned universe later.
+        for label, periods in RS_PERIODS.items():
+            frame[f"Return{label}"] = close.pct_change(periods=periods) * 100
+
+        frame["DailyReturnPct"] = close.pct_change() * 100
+        frame["GapPct"] = _safe_ratio(frame.get("Open", close) - prev_close, prev_close) * 100
+        frame["VolumeConfirmedMomentum"] = (
+            frame["BullMomentum"]
+            & (frame["DailyReturnPct"] > 0)
+            & (frame["VolumeRatio"] >= 1.5)
+        )
+
+        previous_20_high = high.rolling(20, min_periods=20).max().shift(1)
+        frame["Breakout20"] = (
+            (close > previous_20_high)
+            & (frame["VolumeRatio"] >= 1.5)
+            & frame["BullSwing"]
+        )
 
         frame["Yahoo Symbol"] = ticker
         result_frames.append(frame)
@@ -407,53 +437,41 @@ def latest_snapshot(
     if indicators.empty:
         return pd.DataFrame()
 
-    meta = (
-        universe
-        .set_index("Yahoo Symbol")[["Symbol", "Company"]]
-        .to_dict("index")
-    )
-
+    meta = universe.set_index("Yahoo Symbol")[["Symbol", "Company"]].to_dict("index")
     rows = []
+    latest_columns = [
+        "Close", "EMA9", "EMA21", "SMA20", "SMA50", "SMA200",
+        f"EMA{ema_long}", f"RSI{rsi_period}", "EMA255DistancePct",
+        "BullMomentum", "BullSwing", "BullRegime", "MomentumFresh",
+        "SwingFresh", "RegimeFresh", "Pullback", "ATR14", "ATRPercent",
+        "VolumeSMA20", "VolumeRatio", "AvgTradedValue20", "DailyReturnPct",
+        "GapPct", "VolumeConfirmedMomentum", "Breakout20",
+    ] + [f"Return{label}" for label in RS_PERIODS]
 
-    for ticker, frame in indicators.groupby(
-        "Yahoo Symbol",
-        sort=False,
-    ):
+    for ticker, frame in indicators.groupby("Yahoo Symbol", sort=False):
         row = frame.sort_values("Date").iloc[-1]
-        company = meta.get(
-            ticker,
-            {
-                "Symbol": ticker.replace(".NS", ""),
-                "Company": "",
-            },
-        )
+        company = meta.get(ticker, {"Symbol": ticker.replace(".NS", ""), "Company": ""})
+        item = {"Symbol": company["Symbol"], "Company": company["Company"], "Yahoo Symbol": ticker, "Date": row["Date"]}
+        for col in latest_columns:
+            item[col] = row.get(col, pd.NA)
+        rows.append(item)
 
-        rows.append(
-            {
-                "Symbol": company["Symbol"],
-                "Company": company["Company"],
-                "Yahoo Symbol": ticker,
-                "Date": row["Date"],
-                "Close": row["Close"],
-                "EMA9": row["EMA9"],
-                "EMA21": row["EMA21"],
-                "SMA20": row["SMA20"],
-                "SMA50": row["SMA50"],
-                "SMA200": row["SMA200"],
-                f"EMA{ema_long}": row[f"EMA{ema_long}"],
-                f"RSI{rsi_period}": row[f"RSI{rsi_period}"],
-                "EMA255DistancePct": row["EMA255DistancePct"],
-                "BullMomentum": bool(row["BullMomentum"]),
-                "BullSwing": bool(row["BullSwing"]),
-                "BullRegime": bool(row["BullRegime"]),
-                "MomentumFresh": bool(row["MomentumFresh"]),
-                "SwingFresh": bool(row["SwingFresh"]),
-                "RegimeFresh": bool(row["RegimeFresh"]),
-                "Pullback": bool(row["Pullback"]),
-            }
-        )
+    snapshot = pd.DataFrame(rows)
+    bool_cols = [
+        "BullMomentum", "BullSwing", "BullRegime", "MomentumFresh", "SwingFresh",
+        "RegimeFresh", "Pullback", "VolumeConfirmedMomentum", "Breakout20",
+    ]
+    for col in bool_cols:
+        snapshot[col] = snapshot[col].fillna(False).astype(bool)
 
-    return pd.DataFrame(rows)
+    # Cross-sectional relative strength percentiles. 100 means strongest in the scan.
+    for label in RS_PERIODS:
+        ret_col = f"Return{label}"
+        snapshot[f"RS{label}Pct"] = snapshot[ret_col].rank(pct=True, method="average") * 100
+
+    snapshot["LiquidityBucket"] = snapshot["AvgTradedValue20"].apply(_liquidity_bucket)
+    snapshot["LiquidityEligible"] = snapshot["AvgTradedValue20"] >= LIQUIDITY_THRESHOLD
+    return snapshot
 
 
 def add_days_since_cross(
@@ -465,147 +483,124 @@ def add_days_since_cross(
         return snapshot
 
     cross_dates = {}
-
-    for ticker, frame in indicators.groupby(
-        "Yahoo Symbol",
-        sort=False,
-    ):
+    for ticker, frame in indicators.groupby("Yahoo Symbol", sort=False):
         latest_date = frame["Date"].max()
+        cross_dates[ticker] = {}
+        for cross_col, out_col in [
+            ("Cross9_21", "DaysSince9_21"),
+            ("Cross20_50", "DaysSince20_50"),
+            ("Cross50_200", "DaysSince50_200"),
+        ]:
+            dates = frame.loc[frame[cross_col].fillna(False), "Date"]
+            cross_dates[ticker][out_col] = int((latest_date - dates.iloc[-1]).days) if not dates.empty else None
 
-        latest_9 = frame.loc[
-            frame["Cross9_21"] & (frame["Date"] <= latest_date),
-            "Date",
-        ]
-        latest_20 = frame.loc[
-            frame["Cross20_50"] & (frame["Date"] <= latest_date),
-            "Date",
-        ]
-        latest_50 = frame.loc[
-            frame["Cross50_200"] & (frame["Date"] <= latest_date),
-            "Date",
-        ]
-
-        cross_dates[ticker] = {
-            "DaysSince9_21": (
-                int((latest_date - latest_9.iloc[-1]).days)
-                if not latest_9.empty
-                else None
-            ),
-            "DaysSince20_50": (
-                int((latest_date - latest_20.iloc[-1]).days)
-                if not latest_20.empty
-                else None
-            ),
-            "DaysSince50_200": (
-                int((latest_date - latest_50.iloc[-1]).days)
-                if not latest_50.empty
-                else None
-            ),
-        }
-
-    extra = pd.DataFrame.from_dict(
-        cross_dates,
-        orient="index",
-    )
+    extra = pd.DataFrame.from_dict(cross_dates, orient="index")
     extra.index.name = "Yahoo Symbol"
-
-    return snapshot.join(
-        extra,
-        on="Yahoo Symbol",
-    )
+    return snapshot.join(extra, on="Yahoo Symbol")
 
 
-def convergence_table(
-    snapshot: pd.DataFrame,
-) -> pd.DataFrame:
+def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
+    """Score distinct setup paths instead of averaging contradictory signals."""
     if snapshot.empty:
         return pd.DataFrame()
 
     df = snapshot.copy()
+    rs3 = df["RS3MPct"].fillna(0)
+    volume = df["VolumeRatio"].fillna(0)
+    liquid = df["LiquidityEligible"].fillna(False).astype(int)
 
-    # Do not treat the related moving-average states as independent signals.
-    # Instead we score three trend dimensions plus entry/pullback.
-    df["RegimeScore"] = (
-        df["BullRegime"].astype(int) * 25
-    )
-    df["MomentumScore"] = (
-        df["BullMomentum"].astype(int) * 20
-        + df["MomentumFresh"].astype(int) * 5
-    )
-    df["SwingScore"] = (
-        df["BullSwing"].astype(int) * 20
-        + df["SwingFresh"].astype(int) * 5
-    )
-
-    # Entry score is deliberately independent of trend direction.
-    rsi = df.filter(regex=r"^RSI\d+$").iloc[:, 0]
+    # Baseline trend evidence retained for continuity with the existing app.
+    df["RegimeScore"] = df["BullRegime"].astype(int) * 25
+    df["MomentumScore"] = df["BullMomentum"].astype(int) * 20 + df["MomentumFresh"].astype(int) * 5
+    df["SwingScore"] = df["BullSwing"].astype(int) * 20 + df["SwingFresh"].astype(int) * 5
     near_ema = df["EMA255DistancePct"].abs() <= 2
+    rsi = df.filter(regex=r"^RSI\d+$").iloc[:, 0]
+    df["EntryScore"] = near_ema.astype(int) * 15 + ((rsi >= 35) & (rsi <= 60)).astype(int) * 10
+    df["TrendScore"] = df["RegimeScore"] + df["MomentumScore"] + df["SwingScore"]
 
-    entry = (
-        (near_ema.astype(int) * 15)
-        + ((rsi >= 35) & (rsi <= 60)).astype(int) * 10
+    # Setup-specific paths. Each path is evaluated on its own logic.
+    df["TrendContinuationScore"] = (
+        df["BullRegime"].astype(int) * 30
+        + df["BullSwing"].astype(int) * 25
+        + df["BullMomentum"].astype(int) * 20
+        + (rs3 >= 70).astype(int) * 15
+        + liquid * 10
+    )
+    df["PullbackScore"] = (
+        df["BullRegime"].astype(int) * 25
+        + df["BullSwing"].astype(int) * 15
+        + df["Pullback"].astype(int) * 30
+        + (rs3 >= 50).astype(int) * 10
+        + liquid * 10
+        + (volume >= 0.8).astype(int) * 10
+    )
+    df["FreshMomentumScore"] = (
+        df["BullRegime"].astype(int) * 20
+        + df["BullSwing"].astype(int) * 15
+        + df["BullMomentum"].astype(int) * 15
+        + df["MomentumFresh"].astype(int) * 15
+        + df["VolumeConfirmedMomentum"].astype(int) * 15
+        + (rs3 >= 70).astype(int) * 10
+        + liquid * 10
+    )
+    df["BreakoutScore"] = (
+        df["BullRegime"].astype(int) * 20
+        + df["BullSwing"].astype(int) * 20
+        + df["Breakout20"].astype(int) * 25
+        + (volume >= 1.5).astype(int) * 10
+        + (rs3 >= 70).astype(int) * 15
+        + liquid * 10
     )
 
-    # Oversold pullback is a setup, not automatically a positive score.
-    pullback_flag = df["Pullback"].astype(int)
+    score_cols = ["TrendContinuationScore", "PullbackScore", "FreshMomentumScore", "BreakoutScore"]
+    setup_labels = {
+        "TrendContinuationScore": "Trend Continuation",
+        "PullbackScore": "Pullback in Bull Regime",
+        "FreshMomentumScore": "Fresh Momentum",
+        "BreakoutScore": "Volume Breakout",
+    }
+    df["SetupScore"] = df[score_cols].max(axis=1)
+    best_col = df[score_cols].idxmax(axis=1)
+    df["Setup"] = best_col.map(setup_labels)
 
-    df["EntryScore"] = entry
-    df["TrendScore"] = (
-        df["RegimeScore"]
-        + df["MomentumScore"]
-        + df["SwingScore"]
+    # Only label an active setup when its defining trigger exists.
+    active = (
+        (df["Setup"] == "Pullback in Bull Regime") & df["Pullback"]
+    ) | (
+        (df["Setup"] == "Fresh Momentum") & df["MomentumFresh"]
+    ) | (
+        (df["Setup"] == "Volume Breakout") & df["Breakout20"]
+    ) | (
+        (df["Setup"] == "Trend Continuation") & df["BullRegime"] & df["BullSwing"] & df["BullMomentum"]
     )
-    df["ConvergenceScore"] = df["TrendScore"] + df["EntryScore"]
+    df.loc[~active, "Setup"] = "No active setup"
 
-    df["Setup"] = "No setup"
-    df.loc[pullback_flag.eq(1) & df["BullRegime"], "Setup"] = (
-        "Pullback in Bull Regime"
-    )
-    df.loc[
-        df["MomentumFresh"]
-        & df["BullSwing"]
-        & df["BullRegime"],
-        "Setup",
-    ] = "Fresh Momentum"
-    df.loc[
-        df["SwingFresh"]
-        & df["BullRegime"],
-        "Setup",
-    ] = "Fresh Swing"
-    df.loc[
-        (df["TrendScore"] >= 60)
-        & (df["EntryScore"] >= 15),
-        "Setup",
-    ] = "Trend + Entry"
-
+    # ConvergenceScore remains the public ranking field, now setup-aware.
+    df["ConvergenceScore"] = df["SetupScore"].round(0).astype(int)
     return df.sort_values(
-        ["ConvergenceScore", "TrendScore", "EntryScore"],
+        ["ConvergenceScore", "RS3MPct", "AvgTradedValue20"],
         ascending=False,
+        na_position="last",
     ).reset_index(drop=True)
 
-
-@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
 def fundamental_snapshot(ticker: str) -> dict:
-    """Fetch fundamentals only after a stock becomes a finalist."""
+    """Fetch six late-stage fundamental context fields only for finalists."""
     defaults = {
         "PE": None,
-        "PB": None,
+        "Revenue Growth %": None,
         "Profit Margin %": None,
         "Debt/Equity": None,
         "EV/EBITDA": None,
         "Market Cap": None,
     }
-
     try:
         info = yf.Ticker(ticker).info or {}
-
         profit = info.get("profitMargins")
+        revenue_growth = info.get("revenueGrowth")
         return {
             "PE": info.get("trailingPE"),
-            "PB": info.get("priceToBook"),
-            "Profit Margin %": (
-                profit * 100 if profit is not None else None
-            ),
+            "Revenue Growth %": revenue_growth * 100 if revenue_growth is not None else None,
+            "Profit Margin %": profit * 100 if profit is not None else None,
             "Debt/Equity": info.get("debtToEquity"),
             "EV/EBITDA": info.get("enterpriseToEbitda"),
             "Market Cap": info.get("marketCap"),
