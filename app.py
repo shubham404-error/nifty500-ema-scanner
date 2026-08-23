@@ -360,26 +360,41 @@ def scan_prices(
             continue
 
         frame["EMA"] = frame["Close"].ewm(
-            span=ema_period,
-            adjust=False,
-            min_periods=ema_period,
-        ).mean()
+    span=ema_period,
+    adjust=False,
+    min_periods=ema_period,
+).mean()
 
-        touches = classify_signal(
-            frame,
-            touch_mode,
-            tolerance_pct,
-        )
+# Previous values are required to determine whether
+# the stock touched the EMA from above or below.
+frame["Previous Close"] = frame["Close"].shift(1)
+frame["Previous EMA"] = frame["EMA"].shift(1)
 
-        hits = frame.loc[touches]
+if touch_mode == "Wick":
+    touches = (
+        frame["Low"].le(frame["EMA"])
+        & frame["High"].ge(frame["EMA"])
+        & frame["EMA"].notna()
+    )
+else:
+    distance = (
+        (frame["Close"] - frame["EMA"]).abs()
+        / frame["EMA"].abs()
+    )
 
-        if hits.empty:
-            continue
+    touches = (
+        distance.le(tolerance_pct / 100)
+        & frame["EMA"].notna()
+    )
 
-        hit = hits.iloc[-1]
-        previous_close = hit["Previous Close"]
-        previous_ema = hit["Previous EMA"]
+hits = frame.loc[touches]
 
+if hits.empty:
+    continue
+
+hit = hits.iloc[-1]
+previous_close = hit["Previous Close"]
+previous_ema = hit["Previous EMA"]
         close_distance = abs(
             float(hit["Close"]) - float(hit["EMA"])
         ) / max(abs(float(hit["EMA"])), 1e-12)
