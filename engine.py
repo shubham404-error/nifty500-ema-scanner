@@ -22,16 +22,16 @@ NSE_HEADERS = {
 
 # NSE's current Total Market page defines the universe as Nifty 500 +
 # Nifty Microcap 250. The app still validates the final count dynamically.
-TOTAL_MARKET_URLS = [
-    "https://nsearchives.nseindia.com/content/indices/ind_niftytotalmarketlist.csv",
-]
+TOTAL_MARKET_URLS = []
 
 NIFTY500_URLS = [
+    "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
     "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
 ]
 
 MICROCAP250_URLS = [
-    "https://nsearchives.nseindia.com/content/indices/ind_niftymicrocap250list.csv",
+    "https://www.niftyindices.com/IndexConstituent/ind_niftymicrocap250_list.csv",
+    "https://nsearchives.nseindia.com/content/indices/ind_niftymicrocap250_list.csv",
 ]
 
 
@@ -111,21 +111,16 @@ def load_universe(universe_name: str = "NIFTY TOTAL MARKET") -> pd.DataFrame:
     if universe_name == "NIFTY 500":
         return _read_nse_csv(NIFTY500_URLS)
 
-    # Try the direct Total Market constituent file first.
-    try:
-        direct = _read_nse_csv(TOTAL_MARKET_URLS)
-        if len(direct) >= 700:
-            return direct
-    except Exception:
-        pass
-
-    # Robust fallback. NSE states Total Market is Nifty 500 + Microcap 250.
+    # The official Total Market universe is Nifty 500 plus
+    # Nifty Microcap 250. Build it from the two public constituent files.
+    # This avoids relying on a non-public/unstable direct Total Market CSV URL.
     nifty500 = _read_nse_csv(NIFTY500_URLS)
     microcap = _read_nse_csv(MICROCAP250_URLS)
 
     result = (
         pd.concat([nifty500, microcap], ignore_index=True)
         .drop_duplicates("Symbol")
+        .sort_values("Symbol")
         .reset_index(drop=True)
     )
 
