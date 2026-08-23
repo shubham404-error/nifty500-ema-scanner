@@ -587,7 +587,7 @@ def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
             series = pd.Series(series, index=df.index)
         df[name] = series.fillna(False).astype(bool)
 
-    rsi_cols = [col for col in df.columns if re.match(r"^RSI\\d+$", str(col))]
+    rsi_cols = [col for col in df.columns if re.match(r"^RSI\d+$", str(col))]
     rsi = (
         pd.to_numeric(df[rsi_cols[0]], errors="coerce")
         if rsi_cols
@@ -693,9 +693,10 @@ def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
     # ------------------------------------------------------------
     # 4. Trend Continuation
     #
-    # Strong trend alone is deliberately insufficient. Require a
-    # continuation event: a recent 20/50 cross or current
-    # volume-confirmed positive momentum. Breakouts have their own path.
+    # This is intentionally the strictest path. A persistent uptrend
+    # is not enough. The stock must have a valid continuation trigger,
+    # top-tier 3M relative strength, above-normal participation, and
+    # healthy momentum that is not already excessively stretched.
     # ------------------------------------------------------------
     recent_swing_cross = (
         df["SwingFresh"]
@@ -705,21 +706,34 @@ def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
         recent_swing_cross
         | df["VolumeConfirmedMomentum"]
     )
+
+    trend_quality = (
+        (rs3 >= 85)
+        & (volume >= 1.5)
+        & rsi.between(55, 75, inclusive="both")
+    )
+
     trend_continuation_active = (
         strong_trend
         & continuation_trigger
         & ~df["Breakout20"]
-        & (rs3 >= 60)
+        & trend_quality
     )
+
+    # Every active Trend Continuation candidate meets the full core
+    # quality gate. The score is therefore intentionally high and
+    # comparable with the other setup paths, while RS/liquidity remain
+    # secondary ranking fields in the final sort.
     trend_score = (
-        df["BullRegime"].astype(int) * 20
-        + df["BullSwing"].astype(int) * 20
-        + df["BullMomentum"].astype(int) * 15
-        + recent_swing_cross.astype(int) * 20
-        + df["VolumeConfirmedMomentum"].astype(int) * 10
-        + (rs3 >= 70).astype(int) * 10
-        + (rs6 >= 60).astype(int) * 5
+        df["BullRegime"].astype(int) * 15
+        + df["BullSwing"].astype(int) * 15
+        + df["BullMomentum"].astype(int) * 10
+        + continuation_trigger.astype(int) * 20
+        + (rs3 >= 85).astype(int) * 20
+        + (volume >= 1.5).astype(int) * 10
+        + rsi.between(55, 75, inclusive="both").astype(int) * 10
     )
+
     df["TrendContinuationScore"] = 0
     df.loc[trend_continuation_active, "TrendContinuationScore"] = (
         trend_score.loc[trend_continuation_active]
