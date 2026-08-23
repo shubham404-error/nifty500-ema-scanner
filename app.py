@@ -84,45 +84,8 @@ html, body {
     font-family: Helvetica, Arial, sans-serif;
 }
 
-
-.guide-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-    margin: 8px 0 4px;
-}
-.guide-card {
-    background: var(--panel-soft);
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    padding: 12px 14px;
-}
-.guide-card b {
-    color: var(--text);
-    font-size: 13px;
-}
-.guide-card p {
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.45;
-    margin: 5px 0 0;
-}
-@media (max-width: 700px) {
-    .guide-grid {
-        grid-template-columns: 1fr;
-    }
-}
-
 /* Never override Streamlit / Material Symbols fonts.
    Otherwise icon ligatures render as literal text such as keyboard_double_arrow. */
-/* Hide only Streamlit's viewer/GitHub badge.
-   Keep the header and MainMenu intact. */
-.styles_viewerBadge__1yB5_,
-.viewerBadge_link__1S137,
-[data-testid="stViewerBadge"] {
-    display: none !important;
-}
-
 .material-symbols-rounded,
 .material-symbols-outlined,
 [class*="material-symbols"],
@@ -412,6 +375,74 @@ def guide(title: str, copy: str, steps=None):
 """,
         unsafe_allow_html=True,
     )
+
+
+def strategy_indicator_toggle(strategy: str):
+    """Show only the indicator education relevant to the current strategy."""
+    content = {
+        "regime": (
+            "WHAT DO 50 / 200 SMA MEAN?",
+            [
+                ("50 SMA", "A medium-term average that reacts faster to recent trend changes."),
+                ("200 SMA", "A long-term trend reference used to judge broader market structure."),
+                ("How to read it", "50 SMA above 200 SMA suggests bullish long-term structure. It is context, not a standalone buy signal."),
+            ],
+        ),
+        "momentum": (
+            "WHAT DOES 9 / 21 EMA MOMENTUM MEAN?",
+            [
+                ("9 EMA", "A faster moving average that reacts quickly to recent price changes."),
+                ("21 EMA", "A slower short-term trend average that smooths recent price movement."),
+                ("Fresh cross", "When 9 EMA moves above 21 EMA, short-term momentum has recently turned bullish."),
+                ("Volume confirmation", "Higher-than-normal volume can make a momentum move more meaningful. In this app, 1.5x means at least 50% above the 20-day average."),
+            ],
+        ),
+        "swing": (
+            "WHAT DOES 20 / 50 SWING STRUCTURE MEAN?",
+            [
+                ("20 SMA", "A faster swing-trend average that reflects recent price structure."),
+                ("50 SMA", "A slower medium-term average used as the broader swing reference."),
+                ("How to read it", "20 SMA above 50 SMA indicates bullish medium-term alignment. Relative strength helps judge whether the move is stronger than the wider universe."),
+            ],
+        ),
+        "pullback": (
+            "WHAT DOES EMA 255 PULLBACK MEAN?",
+            [
+                ("EMA 255", "A long-term trend reference. This strategy looks for price weakness near that level."),
+                ("RSI 14", "A momentum/exhaustion measure. Below 35 is treated here as an oversold zone, not an automatic buy signal."),
+                ("How to read it", "The setup is interesting when an oversold pullback happens near EMA 255 within a broader bullish structure."),
+            ],
+        ),
+    }
+    label, items = content[strategy]
+    with st.expander(label, expanded=False):
+        for heading, copy in items:
+            st.markdown(f"**{heading}.** {copy}")
+        st.caption("Use the indicator as part of the setup shown on this page. No single indicator guarantees a winning trade.")
+
+
+def table_info_toggle(table_type: str):
+    if table_type == "confluence":
+        with st.expander("WHAT DO THESE COLUMNS MEAN?", expanded=False):
+            st.markdown(
+                "**Setup.** The strategy path that qualified the stock.  \n"
+                "**Confluence Score.** Strength of the active setup path, not a probability of profit.  \n"
+                "**3M / 6M Relative Strength.** Percentile performance versus the scanned universe.  \n"
+                "**Volume vs Normal.** Current volume divided by its 20-day average.  \n"
+                "**Volatility (ATR %).** Typical price movement relative to price. Higher means the stock usually moves more aggressively."
+            )
+    elif table_type == "final":
+        with st.expander("TECHNICALS OR FUNDAMENTALS? WHAT AM I LOOKING AT?", expanded=False):
+            st.markdown(
+                "**Technical fields** explain why the setup survived the scanner.  \n"
+                "**Fundamentals** provide business and valuation context after technical selection.  \n"
+                "**P/E.** Price paid for each unit of earnings.  \n"
+                "**Revenue Growth.** Recent business growth.  \n"
+                "**Net Profit Margin.** Profit retained from revenue.  \n"
+                "**Debt/Equity.** Financial leverage.  \n"
+                "**EV/EBITDA.** Enterprise value relative to operating earnings.  \n"
+                "**Market Cap.** Approximate company size."
+            )
 
 
 def card(title: str, copy: str):
@@ -751,14 +782,7 @@ def strategy_page(strategy: str):
     title, subtitle = titles[strategy]
     terminal_header(title, subtitle)
 
-    explanations = {
-        "regime": ("How to use Market Regime", "Use this as market structure, not a standalone buy signal.", ["50 SMA above 200 SMA indicates bullish long-term structure.", "Check relative strength and liquidity before research."]),
-        "momentum": ("How to use Momentum", "This page separates a fresh cross from established momentum and shows whether volume confirms the move.", ["Fresh Cross is the 9 EMA moving above the 21 EMA.", "Volume Confirmed requires a positive day and at least 1.5x 20-day average volume.", "RS 3M percentile compares the stock with the scanned universe."]),
-        "swing": ("How to use Swing", "Medium-term structure using the 20 and 50 SMA.", ["Bullish means SMA 20 is above SMA 50.", "Use RS and liquidity to judge whether the trend has broader quality."]),
-        "pullback": ("How to use Pullback", "Oversold price near EMA 255 is a candidate, not an automatic buy.", ["RSI below 35 and within ±2% of EMA 255 trigger the setup.", "Bull regime, liquidity and relative strength provide context."]),
-    }
-    g_title,g_copy,g_steps=explanations[strategy]
-    guide(g_title,g_copy,g_steps)
+    strategy_indicator_toggle(strategy)
 
     filter_col, liquidity_col = st.columns([2,1])
     with liquidity_col:
@@ -813,12 +837,11 @@ def strategy_page(strategy: str):
 
 
 def convergence_page():
-
-    indicator_guide()
-    explain_table_columns("confluence")
     require_scan()
     df=st.session_state["convergence"].copy()
     terminal_header("Confluence","Setup-aware ranking. Trend, pullback, fresh momentum and breakout paths are evaluated separately.")
+
+    table_info_toggle("confluence")
 
     c1,c2,c3,c4=st.columns(4)
     c1.metric("ACTIVE SETUPS",f"{int((df['Setup']!='No active setup').sum()):,}")
@@ -846,30 +869,14 @@ def convergence_page():
 
 
 def buying_list_page():
-
-    indicator_guide()
-    explain_table_columns("final")
     require_scan()
     df=st.session_state["convergence"].copy()
     terminal_header("Final Buy List","Liquid, high-quality research candidates. This is a shortlist, not an automated buy recommendation.")
+
+    table_info_toggle("final")
     min_score=st.slider("Minimum shortlist score",60,100,70,5,key="buy_min_score")
-    use_liquidity=st.toggle(
-        "Require liquidity filter",
-        value=False,
-        key="buy_liquidity_filter",
-        help="Optional. When enabled, only stocks meeting the app's 20-day traded-value threshold are included."
-    )
-    shortlist=df.loc[
-        (df["Setup"]!="No active setup")
-        & (df["ConvergenceScore"]>=min_score)
-    ].copy()
-    if use_liquidity:
-        shortlist=shortlist.loc[shortlist["LiquidityEligible"].fillna(False)].copy()
-    shortlist=shortlist.sort_values(
-        ["ConvergenceScore","RS3MPct","AvgTradedValue20"],
-        ascending=False,
-        na_position="last"
-    )
+    shortlist=df.loc[(df["Setup"]!="No active setup")&(df["LiquidityEligible"])&(df["ConvergenceScore"]>=min_score)].copy()
+    shortlist=shortlist.sort_values(["ConvergenceScore","RS3MPct","AvgTradedValue20"],ascending=False,na_position="last").head(25)
     if shortlist.empty:
         st.info("No stocks currently meet the shortlist rules.")
         return
@@ -902,92 +909,6 @@ def buying_list_page():
         frame=st.session_state["indicators"].loc[st.session_state["indicators"]["Yahoo Symbol"]==row["Yahoo Symbol"]].copy()
         st.plotly_chart(market_chart(frame,selected,["EMA9","EMA21","SMA20","SMA50","SMA200","EMA255"],rsi_col="RSI14",days=252,cross_columns=["Cross9_21","Cross20_50","Cross50_200"],rsi_lines=[(30,"RSI 30"),(35,"BUY ZONE 35"),(50,"RSI 50"),(70,"RSI 70")]),use_container_width=True,config={"displaylogo":False,"scrollZoom":True})
 
-
-# -------------------------------------------------------------------
-# Beginner indicator guide. UI-only. No scan logic changes.
-# -------------------------------------------------------------------
-def indicator_guide():
-    with st.expander("LEARN THE INDICATORS", expanded=False):
-        st.markdown(
-            """
-            <div class="guide-grid">
-              <div class="guide-card">
-                <b>9 / 21 EMA</b>
-                <p>Short-term momentum. When the faster 9 EMA crosses above
-                the 21 EMA, recent buying momentum is strengthening.</p>
-              </div>
-              <div class="guide-card">
-                <b>20 / 50 SMA</b>
-                <p>Medium-term trend. It helps show whether the swing trend
-                is moving in the same direction as the broader trend.</p>
-              </div>
-              <div class="guide-card">
-                <b>50 / 200 SMA</b>
-                <p>Long-term market structure. A 50 SMA above the 200 SMA
-                indicates a bullish long-term trend.</p>
-              </div>
-              <div class="guide-card">
-                <b>EMA 255</b>
-                <p>A long-term trend reference. The Pullback strategy looks
-                for weakness near this level inside a bullish structure.</p>
-              </div>
-              <div class="guide-card">
-                <b>RSI 14</b>
-                <p>Momentum and exhaustion. Below 35 is a weak/oversold zone.
-                Above 70 can indicate a stretched move. RSI alone is not a buy signal.</p>
-              </div>
-              <div class="guide-card">
-                <b>Volume vs Normal</b>
-                <p>Shows current participation relative to normal trading.
-                1.5x means roughly 50% more volume than the reference average.</p>
-              </div>
-              <div class="guide-card">
-                <b>3M / 6M Relative Strength</b>
-                <p>Percentile rank versus the stocks in the scanned universe.
-                90 means the stock has been stronger than roughly 90% of peers.</p>
-              </div>
-              <div class="guide-card">
-                <b>Volatility (ATR %)</b>
-                <p>Average True Range expressed as a percentage of price.
-                It tells you how much the stock typically moves and helps you judge risk.</p>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            "Important: indicators are evidence, not guarantees. "
-            "Use the chart and fundamentals to validate a candidate before investing."
-        )
-
-
-def explain_table_columns(table_type="confluence"):
-    with st.expander(
-        "WHAT DO THESE COLUMNS MEAN?",
-        expanded=False,
-    ):
-        if table_type == "confluence":
-            st.markdown(
-                """
-                **Setup** tells you *why* the stock qualified.  
-                **Confluence Score** measures the strength of that detected setup.  
-                **RS 3M / RS 6M** show relative strength versus the scanned universe.  
-                **Volume** shows participation versus normal.  
-                **RSI** shows current momentum/exhaustion.  
-                **EMA255 Dist.** shows how far price is from the long-term reference.  
-                **Volatility (ATR %)** shows typical daily movement.  
-                """
-            )
-        else:
-            st.markdown(
-                """
-                **Investor Conviction** ranks candidates after the stricter investor-quality checks.  
-                **Technical Quality** measures the underlying technical setup.  
-                **Confluence** is the original setup score.  
-                **Fundamentals** provide a business/valuation sanity check, not a rescue mechanism for a weak setup.  
-                **Volatility (ATR %)** helps you understand how aggressively the stock can move.  
-                """
-            )
 
 # -------------------------------------------------------------------
 # Navigation# -------------------------------------------------------------------
