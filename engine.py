@@ -25,6 +25,14 @@ NSE_HEADERS = {
 # Nifty Microcap 250. The app still validates the final count dynamically.
 TOTAL_MARKET_URLS = []
 
+NIFTY50_URLS = [
+    "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv",
+]
+
+NIFTY200_URLS = [
+    "https://www.niftyindices.com/IndexConstituent/ind_nifty200list.csv",
+]
+
 NIFTY500_URLS = [
     "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
     "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
@@ -37,7 +45,7 @@ MICROCAP250_URLS = [
 ]
 
 
-def _read_nse_csv(urls: list[str]) -> pd.DataFrame:
+def _read_nse_csv(urls: list[str], min_constituents: int = 100) -> pd.DataFrame:
     """Read an official NSE/Nifty constituent CSV with bounded retries.
 
     A source is accepted only after schema and minimum-size validation. This
@@ -78,8 +86,8 @@ def _read_nse_csv(urls: list[str]) -> pd.DataFrame:
                 result["Company"] = result["Company"].astype(str).str.strip()
                 result = result.loc[result["Symbol"].notna() & result["Symbol"].ne("")]
                 result = result.drop_duplicates("Symbol").reset_index(drop=True)
-                if len(result) < 100:
-                    raise ValueError(f"Only {len(result)} valid constituents returned")
+                if len(result) < min_constituents:
+                    raise ValueError(f"Only {len(result)} valid constituents returned; expected at least {min_constituents}")
 
                 result["Yahoo Symbol"] = result["Symbol"] + ".NS"
                 return result[["Symbol", "Company", "Yahoo Symbol"]]
@@ -94,14 +102,23 @@ def _read_nse_csv(urls: list[str]) -> pd.DataFrame:
 
 @st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
 def load_universe(universe_name: str = "NIFTY TOTAL MARKET") -> pd.DataFrame:
+    if universe_name == "NIFTY 50":
+        return _read_nse_csv(NIFTY50_URLS, min_constituents=40)
+
+    if universe_name == "NIFTY 200":
+        return _read_nse_csv(NIFTY200_URLS, min_constituents=150)
+
     if universe_name == "NIFTY 500":
-        return _read_nse_csv(NIFTY500_URLS)
+        return _read_nse_csv(NIFTY500_URLS, min_constituents=300)
+
+    if universe_name != "NIFTY TOTAL MARKET":
+        raise ValueError(f"Unsupported stock universe: {universe_name}")
 
     # The official Total Market universe is Nifty 500 plus
     # Nifty Microcap 250. Build it from the two public constituent files.
     # This avoids relying on a non-public/unstable direct Total Market CSV URL.
-    nifty500 = _read_nse_csv(NIFTY500_URLS)
-    microcap = _read_nse_csv(MICROCAP250_URLS)
+    nifty500 = _read_nse_csv(NIFTY500_URLS, min_constituents=300)
+    microcap = _read_nse_csv(MICROCAP250_URLS, min_constituents=150)
 
     result = (
         pd.concat([nifty500, microcap], ignore_index=True)
