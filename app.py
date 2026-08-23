@@ -13,6 +13,7 @@ from engine import (
     calculate_indicators,
     convergence_table,
     fundamental_snapshot,
+    investor_quality_gate,
     latest_snapshot,
     load_universe,
     download_prices,
@@ -377,74 +378,6 @@ def guide(title: str, copy: str, steps=None):
     )
 
 
-def strategy_indicator_toggle(strategy: str):
-    """Show only the indicator education relevant to the current strategy."""
-    content = {
-        "regime": (
-            "WHAT DO 50 / 200 SMA MEAN?",
-            [
-                ("50 SMA", "A medium-term average that reacts faster to recent trend changes."),
-                ("200 SMA", "A long-term trend reference used to judge broader market structure."),
-                ("How to read it", "50 SMA above 200 SMA suggests bullish long-term structure. It is context, not a standalone buy signal."),
-            ],
-        ),
-        "momentum": (
-            "WHAT DOES 9 / 21 EMA MOMENTUM MEAN?",
-            [
-                ("9 EMA", "A faster moving average that reacts quickly to recent price changes."),
-                ("21 EMA", "A slower short-term trend average that smooths recent price movement."),
-                ("Fresh cross", "When 9 EMA moves above 21 EMA, short-term momentum has recently turned bullish."),
-                ("Volume confirmation", "Higher-than-normal volume can make a momentum move more meaningful. In this app, 1.5x means at least 50% above the 20-day average."),
-            ],
-        ),
-        "swing": (
-            "WHAT DOES 20 / 50 SWING STRUCTURE MEAN?",
-            [
-                ("20 SMA", "A faster swing-trend average that reflects recent price structure."),
-                ("50 SMA", "A slower medium-term average used as the broader swing reference."),
-                ("How to read it", "20 SMA above 50 SMA indicates bullish medium-term alignment. Relative strength helps judge whether the move is stronger than the wider universe."),
-            ],
-        ),
-        "pullback": (
-            "WHAT DOES EMA 255 PULLBACK MEAN?",
-            [
-                ("EMA 255", "A long-term trend reference. This strategy looks for price weakness near that level."),
-                ("RSI 14", "A momentum/exhaustion measure. Below 35 is treated here as an oversold zone, not an automatic buy signal."),
-                ("How to read it", "The setup is interesting when an oversold pullback happens near EMA 255 within a broader bullish structure."),
-            ],
-        ),
-    }
-    label, items = content[strategy]
-    with st.expander(label, expanded=False):
-        for heading, copy in items:
-            st.markdown(f"**{heading}.** {copy}")
-        st.caption("Use the indicator as part of the setup shown on this page. No single indicator guarantees a winning trade.")
-
-
-def table_info_toggle(table_type: str):
-    if table_type == "confluence":
-        with st.expander("WHAT DO THESE COLUMNS MEAN?", expanded=False):
-            st.markdown(
-                "**Setup.** The strategy path that qualified the stock.  \n"
-                "**Confluence Score.** Strength of the active setup path, not a probability of profit.  \n"
-                "**3M / 6M Relative Strength.** Percentile performance versus the scanned universe.  \n"
-                "**Volume vs Normal.** Current volume divided by its 20-day average.  \n"
-                "**Volatility (ATR %).** Typical price movement relative to price. Higher means the stock usually moves more aggressively."
-            )
-    elif table_type == "final":
-        with st.expander("TECHNICALS OR FUNDAMENTALS? WHAT AM I LOOKING AT?", expanded=False):
-            st.markdown(
-                "**Technical fields** explain why the setup survived the scanner.  \n"
-                "**Fundamentals** provide business and valuation context after technical selection.  \n"
-                "**P/E.** Price paid for each unit of earnings.  \n"
-                "**Revenue Growth.** Recent business growth.  \n"
-                "**Net Profit Margin.** Profit retained from revenue.  \n"
-                "**Debt/Equity.** Financial leverage.  \n"
-                "**EV/EBITDA.** Enterprise value relative to operating earnings.  \n"
-                "**Market Cap.** Approximate company size."
-            )
-
-
 def card(title: str, copy: str):
     st.markdown(
         f"""
@@ -536,11 +469,6 @@ def market_chart(
 # -------------------------------------------------------------------
 
 def home_page():
-
-    st.info(
-        "AFTER-MARKET RESEARCH TOOL: Run the scan after the NSE market has closed. "
-        "The scanner is designed to use completed daily candles, not live intraday data."
-    )
     terminal_header(
         "Home",
         "A guided workspace for finding and researching Indian equity setups",
@@ -551,6 +479,13 @@ def home_page():
         "Start with one market scan, explore a setup that matches your style, "
         "inspect the chart, and then move to the shortlist. You do not need to "
         "understand every indicator to use the app.",
+    )
+
+    st.info(
+        "MARKET TIMING NOTICE. This terminal is designed for after-market-hours "
+        "research using completed daily candles. Run the scan after the NSE market "
+        "has closed and use the results to prepare your research or watchlist for "
+        "the next session. It is not a live intraday scanner."
     )
 
     guide(
@@ -639,7 +574,7 @@ def scan_page():
         "For normal use, keep the defaults. A 4-year history gives enough context "
         "for the long moving averages while keeping the scan practical on free hosting.",
         [
-            "Choose Nifty 50 for a focused large-cap scan, Nifty 200 for large + mid-cap, Nifty 500 for broad coverage, or Nifty Total Market for the widest current universe.",
+            "Select Nifty Total Market for the broadest current universe.",
             "Keep 4 years of history.",
             "Click Run Market Scan and wait for the data-quality result.",
         ],
@@ -650,9 +585,12 @@ def scan_page():
     with c1:
         universe_name = st.selectbox(
             "Stock universe",
-            ["NIFTY 50", "NIFTY 200", "NIFTY 500", "NIFTY TOTAL MARKET"],
+            ["NIFTY TOTAL MARKET", "NIFTY 500", "NIFTY 200", "NIFTY 50"],
             index=0,
-            help="Nifty 50 = large-cap focus. Nifty 200 = large + mid-cap. Nifty 500 = broad market. Nifty Total Market = widest current universe.",
+            help=(
+                "Nifty 50: focused large-cap screen. Nifty 200: large + mid-cap. "
+                "Nifty 500: broad market coverage. Nifty Total Market: broadest screen."
+            ),
         )
 
     with c2:
@@ -698,19 +636,6 @@ def scan_page():
                 batch_size=batch_size,
                 progress_callback=update,
             )
-
-            # Public free data can occasionally miss a small number of symbols.
-            # Keep the scan usable above the hard reliability floor, while making
-            # partial coverage explicit to the user.
-            expected_symbols = len(universe)
-            returned_symbols = prices["Yahoo Symbol"].nunique()
-            coverage = returned_symbols / max(expected_symbols, 1)
-            if coverage < 0.95:
-                st.warning(
-                    f"Partial market-data coverage: {returned_symbols}/{expected_symbols} "
-                    f"({coverage:.1%}). The scan is using the available completed-session "
-                    "data; missing or stale symbols were excluded."
-                )
 
             if prices.empty:
                 st.error("No usable market data was returned.")
@@ -800,7 +725,38 @@ def strategy_page(strategy: str):
     title, subtitle = titles[strategy]
     terminal_header(title, subtitle)
 
-    strategy_indicator_toggle(strategy)
+    explanations = {
+        "regime": (
+            "WHAT DO 50 / 200 SMA MEAN?",
+            "The 50-day average tracks the medium-term trend. The 200-day average "
+            "is a broader long-term trend reference. When the 50 SMA is above the "
+            "200 SMA, this app treats the long-term structure as bullish. It is "
+            "context, not a standalone buy signal."
+        ),
+        "momentum": (
+            "WHAT DOES 9 / 21 EMA MOMENTUM MEAN?",
+            "The 9 EMA reacts faster to recent price changes than the 21 EMA. A fresh "
+            "9-above-21 cross can signal strengthening short-term momentum. Established "
+            "bullish alignment means momentum is already positive. Volume confirmation "
+            "adds evidence that participation supports the move."
+        ),
+        "swing": (
+            "WHAT DOES 20 / 50 SWING STRUCTURE MEAN?",
+            "The 20-day and 50-day simple moving averages describe the medium-term trend. "
+            "A 20 SMA above the 50 SMA indicates bullish swing structure. Relative strength "
+            "and volume help show whether the trend has broader quality."
+        ),
+        "pullback": (
+            "WHAT DOES EMA 255 PULLBACK MEAN?",
+            "EMA 255 is used here as a long-term trend reference. This setup looks for "
+            "oversold price action near that level, with RSI below 35 and price within the "
+            "defined EMA 255 distance. Oversold does not automatically mean buy. Trend and "
+            "quality context still matter."
+        ),
+    }
+    toggle_title, toggle_text = explanations[strategy]
+    with st.expander(toggle_title, expanded=False):
+        st.write(toggle_text)
 
     filter_col, liquidity_col = st.columns([2,1])
     with liquidity_col:
@@ -831,11 +787,11 @@ def strategy_page(strategy: str):
     if search:
         table=table.loc[table["Symbol"].str.contains(search,case=False,na=False)|table["Company"].str.contains(search,case=False,na=False)]
     st.dataframe(table,use_container_width=True,hide_index=True,height=520,column_config={
-        "RS3MPct":st.column_config.NumberColumn("3M Relative Strength",format="%.0f"),
-        "RS6MPct":st.column_config.NumberColumn("6M Relative Strength",format="%.0f"),
-        "VolumeRatio":st.column_config.NumberColumn("Volume vs Normal",format="%.2f"),
+        "RS3MPct":st.column_config.NumberColumn("RS 3M %ile",format="%.0f"),
+        "RS6MPct":st.column_config.NumberColumn("RS 6M %ile",format="%.0f"),
+        "VolumeRatio":st.column_config.NumberColumn("Volume x",format="%.2f"),
         "AvgTradedValue20":st.column_config.NumberColumn("20D Traded Value",format="₹ %.0f"),
-        "ATRPercent":st.column_config.NumberColumn("Volatility (ATR %)",format="%.2f%%"),
+        "ATRPercent":st.column_config.NumberColumn("ATR %",format="%.2f%%"),
     })
 
     st.markdown('<div class="section-kicker">Chart console</div>',unsafe_allow_html=True)
@@ -859,7 +815,19 @@ def convergence_page():
     df=st.session_state["convergence"].copy()
     terminal_header("Confluence","Setup-aware ranking. Trend, pullback, fresh momentum and breakout paths are evaluated separately.")
 
-    table_info_toggle("confluence")
+    with st.expander("WHAT DO THESE COLUMNS MEAN?", expanded=False):
+        st.markdown(
+            """
+            **Setup** is the strategy path that qualified the stock.  
+            **Convergence Score** measures the strength of that qualifying path.  
+            **Trend / Pullback / Fresh Momentum / Breakout scores** show the underlying
+            setup-path scores rather than one flat indicator total.  
+            **RS 3M %ile** compares recent strength with the currently scanned universe.  
+            **Volume x** compares current participation with normal volume.  
+            **Liquidity** is based on 20-day average traded value.  
+            **ATR %** is a volatility measure. Higher values generally mean larger typical price movement.
+            """
+        )
 
     c1,c2,c3,c4=st.columns(4)
     c1.metric("ACTIVE SETUPS",f"{int((df['Setup']!='No active setup').sum()):,}")
@@ -910,11 +878,26 @@ def buying_list_page():
         ],
     )
 
+    with st.expander("WHAT DO THE FINAL BUY LIST COLUMNS MEAN?", expanded=False):
+        st.markdown(
+            """
+            **Investor Conviction** combines technical quality with a simple fundamental sanity check.  
+            **Technical Quality** is the stricter technical screen applied after Confluence.  
+            **Confluence** is the original setup score from the qualifying strategy path.  
+            **RS 3M / RS 6M %ile** show relative strength within the scanned universe.  
+            **Volume x** compares current volume with normal volume.  
+            **Liquidity** describes 20-day average traded-value quality.  
+            **ATR %** is volatility, or how much the stock typically moves.  
+            **P/E, Revenue Growth, Net Profit Margin, Debt/Equity, EV/EBITDA and Market Cap**
+            are fundamental context for research. They are sanity checks, not automatic buy signals.
+            """
+        )
+
     min_score = st.slider(
         "Minimum Investor Conviction Score",
-        75,
+        65,
         95,
-        85,
+        78,
         1,
         key="buy_conviction_score",
     )
@@ -1010,17 +993,17 @@ def buying_list_page():
                         float(row["InvestorTechnicalScore"]), 1
                     ),
                     "Confluence": int(row["ConvergenceScore"]),
-                    "3M Relative Strength": (
+                    "RS 3M %ile": (
                         round(float(row["RS3MPct"]), 1)
                         if pd.notna(row["RS3MPct"])
                         else None
                     ),
-                    "6M Relative Strength": (
+                    "RS 6M %ile": (
                         round(float(row["RS6MPct"]), 1)
                         if pd.notna(row["RS6MPct"])
                         else None
                     ),
-                    "Volume vs Normal": (
+                    "Volume x": (
                         round(float(row["VolumeRatio"]), 2)
                         if pd.notna(row["VolumeRatio"])
                         else None
@@ -1031,7 +1014,7 @@ def buying_list_page():
                         if pd.notna(row["RSI14"])
                         else None
                     ),
-                    "Volatility (ATR %)": (
+                    "ATR %": (
                         round(float(row["ATRPercent"]), 2)
                         if pd.notna(row["ATRPercent"])
                         else None
@@ -1072,7 +1055,7 @@ def buying_list_page():
             final["Investor Conviction"] >= min_score
         ]
         .sort_values(
-            ["Investor Conviction", "Technical Quality", "3M Relative Strength"],
+            ["Investor Conviction", "Technical Quality", "RS 3M %ile"],
             ascending=False,
             na_position="last",
         )
@@ -1120,12 +1103,12 @@ def buying_list_page():
         "Investor Conviction",
         "Technical Quality",
         "Confluence",
-        "3M Relative Strength",
-        "6M Relative Strength",
-        "Volume vs Normal",
+        "RS 3M %ile",
+        "RS 6M %ile",
+        "Volume x",
         "Liquidity",
         "RSI",
-        "Volatility (ATR %)",
+        "ATR %",
         "P/E",
         "Revenue Growth %",
         "Net Profit Margin %",
