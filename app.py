@@ -958,33 +958,68 @@ def buying_list_page():
 # Navigation
 # -------------------------------------------------------------------
 
+# Named wrapper functions are used instead of lambdas so every page has
+# a unique callable name and explicit URL path. This avoids duplicate
+# page-path errors in Streamlit navigation.
+
+def regime_page():
+    strategy_page("regime")
+
+
+def momentum_page():
+    strategy_page("momentum")
+
+
+def swing_page():
+    strategy_page("swing")
+
+
+def pullback_page():
+    strategy_page("pullback")
+
+
 pages = {
     "Overview": [
-        st.Page(home_page, title="Home", icon="🏠"),
+        st.Page(
+            home_page,
+            title="Home",
+            icon="🏠",
+            url_path="home",
+            default=True,
+        ),
     ],
     "Workflow": [
-        st.Page(scan_page, title="Scan Engine", icon="🔄"),
+        st.Page(
+            scan_page,
+            title="Scan Engine",
+            icon="🔄",
+            url_path="scan-engine",
+        ),
     ],
     "Strategies": [
         st.Page(
-            lambda: strategy_page("regime"),
+            regime_page,
             title="Market Regime",
             icon="📐",
+            url_path="market-regime",
         ),
         st.Page(
-            lambda: strategy_page("momentum"),
+            momentum_page,
             title="9/21 Momentum",
             icon="📈",
+            url_path="momentum-9-21",
         ),
         st.Page(
-            lambda: strategy_page("swing"),
+            swing_page,
             title="20/50 Swing",
             icon="📈",
+            url_path="swing-20-50",
         ),
         st.Page(
-            lambda: strategy_page("pullback"),
+            pullback_page,
             title="EMA 255 Pullback",
             icon="↔️",
+            url_path="ema-255-pullback",
         ),
     ],
     "Decision": [
@@ -992,11 +1027,13 @@ pages = {
             convergence_page,
             title="Convergence",
             icon="🎯",
+            url_path="convergence",
         ),
         st.Page(
             buying_list_page,
             title="Final Buying List",
             icon="⭐",
+            url_path="buying-list",
         ),
     ],
 }
@@ -1004,7 +1041,6 @@ pages = {
 pg = st.navigation(
     pages,
     position="top",
-    expanded=False,
 )
 
 with st.sidebar:
