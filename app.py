@@ -68,7 +68,7 @@ html, body {
 
 .block-container {
     max-width: 1440px;
-    padding-top: 1.5rem !important;
+    padding-top: 4.5rem !important;
     padding-bottom: 3rem;
 }
 
@@ -279,7 +279,7 @@ hr {
 
 @media (max-width: 768px) {
     .block-container {
-        padding-top: 1.25rem !important;
+        padding-top: 5.25rem !important;
         padding-left: 1rem !important;
         padding-right: 1rem !important;
     }
