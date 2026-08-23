@@ -721,7 +721,12 @@ def scan_page():
 
         guide(
             "You're ready",
-            "Use the top menu to explore a strategy. The strategy pages reuse this exact scan."
+            "Your market scan is complete. If some stocks have insufficient history for the full strategy suite, review them in Emerging Setups below."
+        )
+
+        st.markdown(
+            "[**→ OPEN EMERGING SETUPS**](/emerging-setups)",
+            unsafe_allow_html=True,
         )
 
 
