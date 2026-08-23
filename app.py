@@ -35,16 +35,15 @@ st.markdown(
     """
 <style>
 :root {
-    --bg: #080a0d;
-    --panel: #0d1116;
-    --panel-2: #11161d;
-    --border: #252c35;
-    --text: #e9eef3;
-    --muted: #8c98a6;
+    --bg: #080b10;
+    --panel: #10151c;
+    --panel-soft: #131a23;
+    --border: #28323d;
+    --text: #eef2f6;
+    --muted: #9aa7b5;
     --accent: #f0a51a;
-    --green: #26c281;
-    --red: #ef6461;
-    --blue: #6ea8fe;
+    --green: #27c78a;
+    --red: #ef6b68;
 }
 
 .stApp {
@@ -57,8 +56,14 @@ html, body, [class*="css"] {
     font-family: Helvetica, Arial, sans-serif;
 }
 
+.block-container {
+    max-width: 1440px;
+    padding-top: 1.2rem;
+    padding-bottom: 3rem;
+}
+
 [data-testid="stSidebar"] {
-    background: #0a0d11;
+    background: #0b0f14;
     border-right: 1px solid var(--border);
 }
 
@@ -66,137 +71,146 @@ html, body, [class*="css"] {
     font-family: Helvetica, Arial, sans-serif;
 }
 
-.block-container {
-    max-width: 1500px;
-    padding-top: 1rem;
-    padding-bottom: 2rem;
+.terminal-topbar {
+    background: linear-gradient(180deg, #111821 0%, #0d1218 100%);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    border-radius: 7px;
 }
 
-.terminal-topbar {
-    background: #0b0e12;
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    padding: 12px 16px;
-    margin-bottom: 12px;
+.terminal-kicker,
+.page-kicker,
+.section-kicker {
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 1.3px;
+    font-size: 10px;
+    font-weight: 700;
 }
 
 .terminal-brand {
-    font-size: 23px;
-    font-weight: 700;
-    letter-spacing: .4px;
-}
-
-.terminal-kicker {
-    color: var(--accent);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-    font-weight: 700;
+    font-size: 28px;
+    font-weight: 750;
+    margin-top: 3px;
 }
 
 .terminal-sub {
     color: var(--muted);
-    font-size: 12px;
-    margin-top: 3px;
+    font-size: 13px;
+    line-height: 1.45;
+    margin-top: 5px;
 }
 
-.section-kicker {
-    color: var(--accent);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 1.4px;
-    font-weight: 700;
-    margin-top: 8px;
+.page-hero {
+    padding: 8px 0 16px;
 }
 
-.hero {
-    padding: 20px 0 14px 0;
+.page-title {
+    font-size: 38px;
+    font-weight: 750;
+    line-height: 1.08;
+    margin: 5px 0 8px;
 }
 
-.hero-title {
-    font-size: 34px;
-    line-height: 1.04;
-    font-weight: 700;
-    margin: 4px 0;
-}
-
-.hero-copy {
-    max-width: 820px;
+.page-copy {
     color: var(--muted);
+    max-width: 940px;
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+.guide-box {
+    background: #101720;
+    border: 1px solid #354251;
+    border-left: 3px solid var(--accent);
+    border-radius: 7px;
+    padding: 14px 16px;
+    margin: 8px 0 18px;
+}
+
+.guide-title {
     font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 5px;
+}
+
+.guide-copy {
+    color: var(--muted);
+    font-size: 13px;
     line-height: 1.55;
 }
 
-.card {
+.guide-step {
+    margin-top: 6px;
+}
+
+.info-card {
     background: var(--panel);
     border: 1px solid var(--border);
+    border-radius: 7px;
     padding: 16px;
+    min-height: 125px;
 }
 
-.card-title {
+.info-card h4 {
+    margin: 0 0 8px;
+    font-size: 15px;
+}
+
+.info-card p {
+    color: var(--muted);
     font-size: 13px;
-    font-weight: 700;
-    margin-bottom: 4px;
+    line-height: 1.55;
+    margin: 0;
 }
 
-.card-copy {
+.status-chip {
+    display: inline-block;
+    border: 1px solid #3b4653;
+    background: #111820;
     color: var(--muted);
-    font-size: 12px;
-    line-height: 1.45;
-}
-
-.metric-card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-top: 2px solid var(--accent);
-    padding: 12px 14px;
-}
-
-.metric-label {
-    color: var(--muted);
-    font-size: 10px;
-    letter-spacing: 1px;
-}
-
-.metric-value {
-    font-size: 24px;
-    font-weight: 700;
-    margin-top: 2px;
-}
-
-.metric-note {
-    color: var(--muted);
-    font-size: 10px;
-    margin-top: 2px;
-}
-
-.signal-green {
-    color: var(--green);
-    font-weight: 700;
-}
-
-.signal-red {
-    color: var(--red);
-    font-weight: 700;
-}
-
-.small-note {
-    color: var(--muted);
+    padding: 5px 10px;
+    border-radius: 999px;
     font-size: 11px;
+    margin: 0 4px 8px 0;
+}
+
+.status-chip.green {
+    color: var(--green);
+    border-color: #1f6a50;
+}
+
+.status-chip.orange {
+    color: var(--accent);
+    border-color: #735919;
+}
+
+.status-chip.red {
+    color: var(--red);
+    border-color: #69302e;
+}
+
+.section-title {
+    font-size: 20px;
+    font-weight: 750;
+    margin: 22px 0 9px;
 }
 
 div[data-testid="stMetric"] {
     background: var(--panel);
     border: 1px solid var(--border);
     border-top: 2px solid var(--accent);
-    padding: 8px 12px;
+    border-radius: 6px;
 }
 
 .stButton > button,
 .stDownloadButton > button {
-    border-radius: 2px;
-    border: 1px solid #4b5563;
-    background: #12171e;
+    min-height: 42px;
+    border-radius: 5px;
+    border: 1px solid #4a5665;
+    background: #141b24;
     color: var(--text);
     font-weight: 700;
 }
@@ -204,26 +218,18 @@ div[data-testid="stMetric"] {
 .stButton > button:hover,
 .stDownloadButton > button:hover {
     border-color: var(--accent);
-    background: #171d25;
+    background: #1a222c;
 }
 
 div[data-testid="stDataFrame"] {
     border: 1px solid var(--border);
+    border-radius: 6px;
 }
 
-div[data-baseweb="tab-list"] {
-    gap: 2px;
-}
-
-button[data-baseweb="tab"] {
-    background: #0b0f14;
-    border: 1px solid var(--border);
+.small-note {
     color: var(--muted);
-}
-
-button[data-baseweb="tab"][aria-selected="true"] {
-    color: var(--text);
-    border-bottom: 2px solid var(--accent);
+    font-size: 11px;
+    line-height: 1.45;
 }
 
 hr {
@@ -240,22 +246,60 @@ hr {
 # -------------------------------------------------------------------
 
 def terminal_header(page_title: str, subtitle: str):
-    universe_count = (
-        len(st.session_state.get("universe", []))
-        if "universe" in st.session_state
-        else 0
-    )
-    scan_date = st.session_state.get("scan_date", "NOT RUN")
+    universe_count = len(st.session_state.get("universe", []))
+    scan_date = st.session_state.get("scan_date", "Not run")
 
     st.markdown(
         f"""
 <div class="terminal-topbar">
-  <div class="terminal-kicker">NSE EQUITY RESEARCH TERMINAL</div>
-  <div class="terminal-brand">NIFTY MARKET TERMINAL</div>
-  <div class="terminal-sub">
-      {page_title} · {subtitle} · UNIVERSE {universe_count or "—"}
-      · LAST SCAN {scan_date}
-  </div>
+  <div class="terminal-kicker">NIFTY MARKET TERMINAL</div>
+  <div class="terminal-brand">{page_title}</div>
+  <div class="terminal-sub">{subtitle}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    if "snapshot" in st.session_state:
+        status = '<span class="status-chip green">SCAN READY</span>'
+    else:
+        status = '<span class="status-chip orange">RUN A SCAN FIRST</span>'
+
+    st.markdown(
+        f"""
+<div>
+  {status}
+  <span class="status-chip">Universe: {universe_count or "Not scanned"}</span>
+  <span class="status-chip">Last scan: {scan_date}</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def page_intro(title: str, copy: str):
+    st.markdown(
+        f"""
+<div class="page-hero">
+  <div class="page-kicker">Research guide</div>
+  <div class="page-title">{title}</div>
+  <div class="page-copy">{copy}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def guide(title: str, copy: str, steps=None):
+    items = ""
+    for i, step in enumerate(steps or [], start=1):
+        items += f'<div class="guide-step"><b>{i}.</b> {step}</div>'
+
+    st.markdown(
+        f"""
+<div class="guide-box">
+  <div class="guide-title">{title}</div>
+  <div class="guide-copy">{copy}{items}</div>
 </div>
 """,
         unsafe_allow_html=True,
@@ -431,148 +475,143 @@ def market_chart(
 def home_page():
     terminal_header(
         "Home",
-        "A simple workflow for finding structured equity setups",
+        "A guided workspace for finding and researching Indian equity setups",
     )
 
-    st.markdown(
-        """
-<div class="hero">
-  <div class="section-kicker">Market research workspace</div>
-  <div class="hero-title">Find. Filter. Validate.</div>
-  <div class="hero-copy">
-    Scan India's broad listed-equity universe, separate market regime from
-    momentum and pullback conditions, then use convergence to create a short
-    research list. The terminal is designed as a decision-support tool, not
-    an automatic trading system.
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
+    page_intro(
+        "Find better research candidates, faster.",
+        "Start with one market scan, explore a setup that matches your style, "
+        "inspect the chart, and then move to the shortlist. You do not need to "
+        "understand every indicator to use the app.",
     )
 
-    if "universe" not in st.session_state:
-        ucount = "—"
-    else:
-        ucount = f"{len(st.session_state['universe']):,}"
+    guide(
+        "Start here",
+        "The app follows a simple research flow. You can stop at any stage.",
+        [
+            "Scan the market once. The result is reused across the app.",
+            "Open Market Health, Momentum, Swing, or Pullback.",
+            "Check the stock's chart before treating a signal as meaningful.",
+            "Use Confluence and Shortlist to narrow your research list.",
+        ],
+    )
 
     snapshot = st.session_state.get("snapshot", pd.DataFrame())
     conv = st.session_state.get("convergence", pd.DataFrame())
+    universe_count = len(st.session_state.get("universe", []))
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("UNIVERSE", ucount)
-    c2.metric("STOCKS SCANNED", f"{len(snapshot):,}")
+    c1.metric("Stocks in universe", f"{universe_count:,}" if universe_count else "—")
+    c2.metric("Stocks scanned", f"{len(snapshot):,}" if not snapshot.empty else "—")
     c3.metric(
-        "BULLISH REGIME",
-        (
-            f"{int(snapshot['BullRegime'].sum()):,}"
-            if not snapshot.empty
-            else "—"
-        ),
+        "Bullish long-term trend",
+        f"{int(snapshot['BullRegime'].sum()):,}" if not snapshot.empty else "—",
     )
     c4.metric(
-        "HIGH-CONVICTION",
-        (
-            f"{int((conv['ConvergenceScore'] >= 65).sum()):,}"
-            if not conv.empty
-            else "—"
-        ),
+        "High-conviction candidates",
+        f"{int((conv['ConvergenceScore'] >= 65).sum()):,}" if not conv.empty else "—",
     )
 
-    st.markdown('<div class="section-kicker">Research modules</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">What each section means</div>', unsafe_allow_html=True)
 
-    modules = st.columns(4)
+    cards = st.columns(4)
+    sections = [
+        (
+            "Market Health",
+            "Checks the long-term environment. Useful as context before looking for individual trades.",
+        ),
+        (
+            "Momentum",
+            "Looks for a recent change in short-term direction using the 9 and 21 EMA.",
+        ),
+        (
+            "Swing",
+            "Looks for medium-term trend alignment using the 20 and 50-day averages.",
+        ),
+        (
+            "Pullback",
+            "Finds potentially oversold stocks close to the long-term EMA 255.",
+        ),
+    ]
 
-    with modules[0]:
-        card(
-            "01 · MARKET REGIME",
-            "Is the long-term structure supportive? Uses 50/200 SMA and price location.",
-        )
+    for col, (title, text) in zip(cards, sections):
+        with col:
+            card(title, text)
 
-    with modules[1]:
-        card(
-            "02 · MOMENTUM",
-            "Short-term direction and fresh 9/21 EMA crossovers.",
-        )
+    st.markdown('<div class="section-title">How to read a stock</div>', unsafe_allow_html=True)
 
-    with modules[2]:
-        card(
-            "03 · SWING STRUCTURE",
-            "Medium-term trend alignment using 20/50 SMA.",
-        )
-
-    with modules[3]:
-        card(
-            "04 · PULLBACK",
-            "Potential oversold pullbacks near EMA 255.",
-        )
-
-    st.markdown('<div class="section-kicker">How to use</div>', unsafe_allow_html=True)
-
-    steps = st.columns(4)
-    for i, (title, copy) in enumerate(
-        [
-            ("1. Scan", "Download one shared price dataset for the whole universe."),
-            ("2. Explore", "Review each strategy as a separate market dimension."),
-            ("3. Converge", "Use Trend Score + Entry Score rather than double-counting indicators."),
-            ("4. Shortlist", "Only finalists receive slower fundamental enrichment."),
-        ]
-    ):
-        with steps[i]:
-            card(title, copy)
+    read = st.columns(3)
+    with read[0]:
+        card("Signal", "The rule that made the stock qualify.")
+    with read[1]:
+        card("Chart", "The price action that tells you whether the signal looks healthy or weak.")
+    with read[2]:
+        card("Fundamentals", "Valuation and business-quality fields to review after technical screening.")
 
     st.caption(
-        "Data source: NSE constituent files + Yahoo Finance daily prices. "
-        "Signals are research candidates and are not investment advice."
+        "Research tool only. Signals are not investment recommendations and are not guarantees of future returns."
     )
 
 
 def scan_page():
     terminal_header(
-        "Scan Engine",
-        "One shared download. All strategies reuse the result.",
+        "Scan Market",
+        "Run one shared scan and reuse it everywhere else",
     )
 
-    st.markdown(
-        '<div class="section-kicker">Market data controls</div>',
-        unsafe_allow_html=True,
+    page_intro(
+        "Scan the market once.",
+        "Choose your universe and history. The scanner downloads daily market data "
+        "and calculates the indicators used by every strategy. You do not need to "
+        "repeat the download for each page.",
     )
 
-    c1, c2, c3, c4 = st.columns([1.4, 1, 1, 1])
+    guide(
+        "Recommended settings",
+        "For normal use, keep the defaults. A 4-year history gives enough context "
+        "for the long moving averages while keeping the scan practical on free hosting.",
+        [
+            "Select Nifty Total Market for the broadest current universe.",
+            "Keep 4 years of history.",
+            "Click Run Market Scan and wait for the data-quality result.",
+        ],
+    )
+
+    c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
 
     with c1:
         universe_name = st.selectbox(
-            "Universe",
+            "Stock universe",
             ["NIFTY TOTAL MARKET", "NIFTY 500"],
             index=0,
+            help="Nifty Total Market gives the broadest screen.",
         )
 
     with c2:
         history_years = st.selectbox(
-            "History",
+            "Price history",
             [3, 4, 5],
             index=1,
         )
 
     with c3:
         batch_size = st.select_slider(
-            "Batch size",
+            "Download chunk",
             options=[50, 75, 100],
             value=75,
+            help="Smaller chunks can be more resilient to public-data limits.",
         )
 
     with c4:
-        if st.button(
+        run_scan = st.button(
             "RUN MARKET SCAN",
             type="primary",
             use_container_width=True,
-        ):
-            run_scan = True
-        else:
-            run_scan = False
+        )
 
     if run_scan:
         try:
-            with st.spinner("Loading current universe..."):
+            with st.spinner("Loading the current stock universe..."):
                 universe = load_universe(universe_name)
 
             progress = st.progress(0)
@@ -581,8 +620,8 @@ def scan_page():
             def update(batch, total, failures):
                 progress.progress(batch / total)
                 status.write(
-                    f"Downloading batch {batch}/{total} · "
-                    f"unresolved {failures}"
+                    f"Downloading market data: {batch}/{total} · "
+                    f"unresolved symbols: {failures}"
                 )
 
             prices, failures = download_prices(
@@ -593,10 +632,10 @@ def scan_page():
             )
 
             if prices.empty:
-                st.error("No price data returned.")
+                st.error("No usable market data was returned.")
                 st.stop()
 
-            status.write("Calculating all indicators once...")
+            status.write("Calculating indicators...")
             indicators = calculate_indicators(prices)
             snapshot = latest_snapshot(indicators, universe)
             snapshot = add_days_since_cross(indicators, snapshot)
@@ -608,19 +647,20 @@ def scan_page():
             st.session_state["snapshot"] = snapshot
             st.session_state["convergence"] = convergence
             st.session_state["failures"] = failures
-            st.session_state["scan_date"] = (
-                datetime.now().strftime("%Y-%m-%d %H:%M")
-            )
+            st.session_state["scan_date"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
             progress.empty()
             status.empty()
 
             st.success(
-                f"Scan complete. {len(snapshot):,} stocks processed."
+                f"Scan complete. {len(snapshot):,} stocks have usable daily history."
             )
 
         except Exception as exc:
-            st.error("The market scan failed.")
+            st.error(
+                "The market scan could not be completed. "
+                "Try again or reduce the download chunk."
+            )
             with st.expander("Technical details"):
                 st.exception(exc)
 
@@ -628,24 +668,13 @@ def scan_page():
         snapshot = st.session_state["snapshot"]
         failures = st.session_state.get("failures", [])
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("CONSTITUENTS", f"{len(st.session_state['universe']):,}")
-        m2.metric("PRICE SERIES", f"{len(snapshot):,}")
-        m3.metric(
-            "BULLISH REGIME",
-            f"{int(snapshot['BullRegime'].sum()):,}",
-        )
-        m4.metric(
-            "PULLBACK SETUPS",
-            f"{int(snapshot['Pullback'].sum()):,}",
-        )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Universe", f"{len(st.session_state['universe']):,}")
+        c2.metric("Usable price histories", f"{len(snapshot):,}")
+        c3.metric("Bullish long-term trend", f"{int(snapshot['BullRegime'].sum()):,}")
+        c4.metric("Oversold pullbacks", f"{int(snapshot['Pullback'].sum()):,}")
 
-        if failures:
-            st.warning(
-                f"{len(failures)} symbols remained unresolved after retry."
-            )
-
-        st.markdown('<div class="section-kicker">Data quality</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Data quality</div>', unsafe_allow_html=True)
 
         q1, q2, q3 = st.columns(3)
         q1.metric(
@@ -653,19 +682,26 @@ def scan_page():
             f"{len(snapshot) / max(len(st.session_state['universe']), 1) * 100:.1f}%",
         )
         q2.metric(
-            "Latest observation",
+            "Latest market date",
             pd.to_datetime(snapshot["Date"]).max().strftime("%d %b %Y"),
         )
-        q3.metric(
-            "Stored history",
-            f"{len(st.session_state['prices']):,} daily rows",
-        )
+        q3.metric("Unresolved symbols", f"{len(failures):,}")
+
+        if failures:
+            st.warning(
+                f"{len(failures)} symbols did not return usable history and were excluded."
+            )
 
         st.download_button(
-            "EXPORT SNAPSHOT CSV",
+            "EXPORT MARKET SNAPSHOT",
             data=snapshot.to_csv(index=False).encode(),
-            file_name="nifty_total_market_snapshot.csv",
+            file_name="nifty_market_snapshot.csv",
             mime="text/csv",
+        )
+
+        guide(
+            "Next step",
+            "Use the top menu to explore a strategy. The strategy pages reuse this exact scan."
         )
 
 
@@ -696,6 +732,46 @@ def strategy_page(strategy: str):
 
     title, subtitle = titles[strategy]
     terminal_header(title, subtitle)
+
+    explanations = {
+        "regime": (
+            "How to use Market Health",
+            "This is the background environment. It asks whether the long-term structure is supportive.",
+            [
+                "Bullish structure means the 50-day average is above the 200-day average.",
+                "Use this as context, not as a standalone buy signal.",
+            ],
+        ),
+        "momentum": (
+            "How to use Momentum",
+            "This page finds short-term changes in direction using the 9 and 21 EMA.",
+            [
+                "Fresh Cross means the 9 EMA has recently crossed above the 21 EMA.",
+                "Bullish Momentum means the 9 EMA is currently above the 21 EMA.",
+                "Use the chart to judge whether the move is fresh or already extended.",
+            ],
+        ),
+        "swing": (
+            "How to use Swing",
+            "This page looks for medium-term alignment between the 20-day and 50-day averages.",
+            [
+                "A bullish structure means the faster average is above the slower average.",
+                "Check the long-term trend and chart before considering the setup.",
+            ],
+        ),
+        "pullback": (
+            "How to use Pullback",
+            "This page finds stocks that are short-term oversold and close to EMA 255.",
+            [
+                "RSI below 35 means the stock is short-term oversold.",
+                "Within ±2% of EMA 255 means price is close to the long-term reference.",
+                "A pullback can keep falling. Use the chart to look for stabilisation.",
+            ],
+        ),
+    }
+
+    g_title, g_copy, g_steps = explanations[strategy]
+    guide(g_title, g_copy, g_steps)
 
     if strategy == "regime":
         mask = snapshot["BullRegime"]
@@ -1125,7 +1201,7 @@ def pullback_page():
 
 
 pages = {
-    "Overview": [
+    "Start": [
         st.Page(
             home_page,
             title="Home",
@@ -1134,52 +1210,52 @@ pages = {
             default=True,
         ),
     ],
-    "Workflow": [
+    "Scan": [
         st.Page(
             scan_page,
-            title="Scan Engine",
+            title="Scan Market",
             icon="🔄",
-            url_path="scan-engine",
+            url_path="scan-market",
         ),
     ],
-    "Strategies": [
+    "Explore": [
         st.Page(
             regime_page,
-            title="Market Regime",
+            title="Market Health",
             icon="📐",
-            url_path="market-regime",
+            url_path="market-health",
         ),
         st.Page(
             momentum_page,
-            title="9/21 Momentum",
+            title="Momentum",
             icon="📈",
-            url_path="momentum-9-21",
+            url_path="momentum",
         ),
         st.Page(
             swing_page,
-            title="20/50 Swing",
-            icon="📈",
-            url_path="swing-20-50",
+            title="Swing",
+            icon="📊",
+            url_path="swing",
         ),
         st.Page(
             pullback_page,
-            title="EMA 255 Pullback",
+            title="Pullback",
             icon="↔️",
-            url_path="ema-255-pullback",
+            url_path="pullback",
         ),
     ],
-    "Decision": [
+    "Decide": [
         st.Page(
             convergence_page,
-            title="Convergence",
+            title="Confluence",
             icon="🎯",
-            url_path="convergence",
+            url_path="confluence",
         ),
         st.Page(
             buying_list_page,
-            title="Final Buying List",
+            title="Shortlist",
             icon="⭐",
-            url_path="buying-list",
+            url_path="shortlist",
         ),
     ],
 }
@@ -1192,9 +1268,13 @@ pg = st.navigation(
 with st.sidebar:
     st.markdown(
         """
-<div class="section-kicker">Terminal controls</div>
+<div class="section-kicker">Quick start</div>
 <div class="small-note">
-Use Scan Engine once. Every strategy page reads the shared cached dataset.
+<b>1.</b> Scan Market<br>
+<b>2.</b> Explore a setup<br>
+<b>3.</b> Check the chart<br>
+<b>4.</b> Open Confluence<br>
+<b>5.</b> Review Shortlist
 </div>
 """,
         unsafe_allow_html=True,
@@ -1203,7 +1283,7 @@ Use Scan Engine once. Every strategy page reads the shared cached dataset.
     if "snapshot" in st.session_state:
         st.success("SCAN READY")
     else:
-        st.warning("NO ACTIVE SCAN")
+        st.warning("RUN A MARKET SCAN")
 
     st.divider()
 
