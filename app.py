@@ -286,11 +286,21 @@ def market_chart(
     frame: pd.DataFrame,
     symbol: str,
     overlays: list[str],
+    rsi_col: str = "RSI14",
     days: int = 180,
+    cross_columns: list[str] | None = None,
+    rsi_lines: list[tuple[float, str]] | None = None,
 ):
+    """Bloomberg-style price + strategy indicators + RSI chart."""
     chart = frame.sort_values("Date").tail(days).copy()
 
-    fig = go.Figure()
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.035,
+        row_heights=[0.76, 0.24],
+    )
 
     fig.add_trace(
         go.Candlestick(
@@ -301,46 +311,115 @@ def market_chart(
             close=chart["Close"],
             name=symbol,
             increasing_line_color="#26c281",
+            increasing_fillcolor="#26c281",
             decreasing_line_color="#ef6461",
-        )
+            decreasing_fillcolor="#ef6461",
+        ),
+        row=1,
+        col=1,
     )
 
     colors = {
         "EMA9": "#6ea8fe",
         "EMA21": "#f0a51a",
-        "SMA20": "#8b5cf6",
+        "SMA20": "#b084f5",
         "SMA50": "#14b8a6",
         "SMA200": "#ef4444",
         "EMA255": "#f59e0b",
     }
 
     for col in overlays:
-        if col in chart.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=chart["Date"],
-                    y=chart[col],
-                    mode="lines",
-                    name=col,
-                    line={
-                        "width": 1.7,
-                        "color": colors.get(col, "#cbd5e1"),
-                    },
-                )
+        if col not in chart.columns:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=chart["Date"],
+                y=chart[col],
+                mode="lines",
+                name=col,
+                line={"width": 1.8, "color": colors.get(col, "#cbd5e1")},
+            ),
+            row=1,
+            col=1,
+        )
+
+    for cross_col in cross_columns or []:
+        if cross_col not in chart.columns:
+            continue
+        marks = chart.loc[chart[cross_col].fillna(False)]
+        if marks.empty:
+            continue
+        label = {
+            "Cross9_21": "9/21 Bullish Cross",
+            "Cross20_50": "20/50 Bullish Cross",
+            "Cross50_200": "Golden Cross",
+        }.get(cross_col, "Bullish Cross")
+        fig.add_trace(
+            go.Scatter(
+                x=marks["Date"],
+                y=marks["Close"],
+                mode="markers",
+                name=label,
+                marker={
+                    "symbol": "triangle-up",
+                    "size": 9,
+                    "color": "#26c281",
+                    "line": {"color": "#080a0d", "width": 1},
+                },
+            ),
+            row=1,
+            col=1,
+        )
+
+    if rsi_col in chart.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=chart["Date"],
+                y=chart[rsi_col],
+                mode="lines",
+                name=rsi_col,
+                line={"width": 1.7, "color": "#8ab4ff"},
+            ),
+            row=2,
+            col=1,
+        )
+        for level, label in (rsi_lines or [(30, "RSI 30"), (70, "RSI 70")]):
+            fig.add_hline(
+                y=level,
+                row=2,
+                col=1,
+                line_dash="dot",
+                line_color="#46515f",
+                line_width=1,
+                annotation_text=label,
+                annotation_position="top left",
+                annotation_font={"size": 9, "color": "#7f8b99"},
             )
 
     fig.update_layout(
-        height=520,
-        margin={"l": 10, "r": 10, "t": 30, "b": 10},
+        height=610,
+        margin={"l": 8, "r": 8, "t": 40, "b": 10},
         paper_bgcolor="#080a0d",
         plot_bgcolor="#080a0d",
         font={"family": "Helvetica, Arial, sans-serif", "color": "#e9eef3"},
-        xaxis={"gridcolor": "#1d232b", "rangeslider_visible": False},
-        yaxis={"gridcolor": "#1d232b"},
-        legend={"orientation": "h", "y": 1.02, "x": 0},
+        legend={"orientation": "h", "y": 1.03, "x": 0, "font": {"size": 10}},
         hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        xaxis2_rangeslider_visible=False,
     )
-
+    fig.update_xaxes(gridcolor="#1d232b", linecolor="#252c35", showline=False, zeroline=False)
+    fig.update_yaxes(gridcolor="#1d232b", linecolor="#252c35", showline=False, zeroline=False, row=1, col=1)
+    fig.update_yaxes(
+        gridcolor="#1d232b",
+        linecolor="#252c35",
+        showline=False,
+        zeroline=False,
+        range=[0, 100],
+        title_text="RSI",
+        title_font={"size": 10, "color": "#8c98a6"},
+        row=2,
+        col=1,
+    )
     return fig
 
 
@@ -719,38 +798,69 @@ def strategy_page(strategy: str):
 
     st.markdown('<div class="section-kicker">Chart console</div>', unsafe_allow_html=True)
 
-    if not table.empty:
-        chosen = st.selectbox(
-            "Select stock",
-            table["Symbol"].tolist(),
-        )
+    show_chart = st.toggle(
+        "SHOW STRATEGY CHART",
+        value=True,
+        key=f"chart_toggle_{strategy}",
+    )
 
-        row = snapshot.loc[
-            snapshot["Symbol"] == chosen
-        ].iloc[0]
+    if show_chart and not table.empty:
+        chart_col_1, chart_col_2 = st.columns([2, 1])
 
-        frame = prices.loc[
-            prices["Yahoo Symbol"] == row["Yahoo Symbol"]
+        with chart_col_1:
+            chosen = st.selectbox(
+                "Select stock",
+                table["Symbol"].tolist(),
+                key=f"chart_stock_{strategy}",
+            )
+
+        with chart_col_2:
+            chart_days = st.selectbox(
+                "Chart window",
+                [90, 180, 252, 365],
+                index=1,
+                key=f"chart_days_{strategy}",
+            )
+
+        row = snapshot.loc[snapshot["Symbol"] == chosen].iloc[0]
+        frame = indicators.loc[
+            indicators["Yahoo Symbol"] == row["Yahoo Symbol"]
         ].copy()
 
         if strategy == "regime":
             overlays = ["SMA50", "SMA200"]
+            crosses = ["Cross50_200"]
+            rsi_levels = [(30, "RSI 30"), (70, "RSI 70")]
+            chart_note = "50/200 regime + RSI context"
         elif strategy == "momentum":
             overlays = ["EMA9", "EMA21", "EMA255"]
+            crosses = ["Cross9_21"]
+            rsi_levels = [(50, "RSI 50"), (70, "RSI 70")]
+            chart_note = "9/21 momentum + EMA 255 trend + RSI"
         elif strategy == "swing":
             overlays = ["SMA20", "SMA50", "EMA255"]
+            crosses = ["Cross20_50"]
+            rsi_levels = [(50, "RSI 50"), (70, "RSI 70")]
+            chart_note = "20/50 swing structure + EMA 255 + RSI"
         else:
             overlays = ["EMA255"]
+            crosses = []
+            rsi_levels = [(35, "BUY ZONE 35"), (50, "RSI 50"), (70, "RSI 70")]
+            chart_note = "EMA 255 pullback + RSI buy-zone"
 
+        st.caption(chart_note)
         st.plotly_chart(
             market_chart(
                 frame,
                 chosen,
                 overlays,
-                days=180,
+                rsi_col="RSI14",
+                days=int(chart_days),
+                cross_columns=crosses,
+                rsi_lines=rsi_levels,
             ),
             use_container_width=True,
-            config={"displaylogo": False},
+            config={"displaylogo": False, "scrollZoom": True},
         )
 
 
@@ -823,6 +933,38 @@ def convergence_page():
         file_name="nifty_total_market_convergence.csv",
         mime="text/csv",
     )
+
+    st.markdown('<div class="section-kicker">Convergence chart</div>', unsafe_allow_html=True)
+    show_chart = st.toggle(
+        "SHOW CONVERGENCE CHART",
+        value=True,
+        key="chart_toggle_convergence",
+    )
+
+    if show_chart and not output.empty:
+        selected = st.selectbox(
+            "Select stock",
+            output["Symbol"].tolist(),
+            key="chart_stock_convergence",
+        )
+        row = df.loc[df["Symbol"] == selected].iloc[0]
+        frame = st.session_state["indicators"].loc[
+            st.session_state["indicators"]["Yahoo Symbol"] == row["Yahoo Symbol"]
+        ].copy()
+        st.caption("All major moving averages + crossover markers + RSI 14")
+        st.plotly_chart(
+            market_chart(
+                frame,
+                selected,
+                ["EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255"],
+                rsi_col="RSI14",
+                days=252,
+                cross_columns=["Cross9_21", "Cross20_50", "Cross50_200"],
+                rsi_lines=[(30, "RSI 30"), (50, "RSI 50"), (70, "RSI 70")],
+            ),
+            use_container_width=True,
+            config={"displaylogo": False, "scrollZoom": True},
+        )
 
 
 def buying_list_page():
@@ -937,20 +1079,23 @@ def buying_list_page():
             final["Symbol"] == selected
         ].iloc[0]
 
-        frame = st.session_state["prices"].loc[
-            st.session_state["prices"]["Yahoo Symbol"]
-            == row["Yahoo Symbol"]
+        frame = st.session_state["indicators"].loc[
+            st.session_state["indicators"]["Yahoo Symbol"] == row["Yahoo Symbol"]
         ].copy()
 
+        st.caption("All major moving averages + crossover markers + RSI 14")
         st.plotly_chart(
             market_chart(
                 frame,
                 selected,
                 ["EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255"],
+                rsi_col="RSI14",
                 days=252,
+                cross_columns=["Cross9_21", "Cross20_50", "Cross50_200"],
+                rsi_lines=[(30, "RSI 30"), (35, "BUY ZONE 35"), (50, "RSI 50"), (70, "RSI 70")],
             ),
             use_container_width=True,
-            config={"displaylogo": False},
+            config={"displaylogo": False, "scrollZoom": True},
         )
 
 
