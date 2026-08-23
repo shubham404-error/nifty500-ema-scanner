@@ -6,6 +6,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from engine import (
     add_days_since_cross,
@@ -20,9 +21,9 @@ from engine import (
 
 st.set_page_config(
     page_title="Nifty Market Terminal",
-    page_icon="▦",
+    page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 
@@ -34,16 +35,15 @@ st.markdown(
     """
 <style>
 :root {
-    --bg: #080a0d;
-    --panel: #0d1116;
-    --panel-2: #11161d;
-    --border: #252c35;
-    --text: #e9eef3;
-    --muted: #8c98a6;
+    --bg: #080b10;
+    --panel: #10151c;
+    --panel-soft: #131a23;
+    --border: #28323d;
+    --text: #eef2f6;
+    --muted: #9aa7b5;
     --accent: #f0a51a;
-    --green: #26c281;
-    --red: #ef6461;
-    --blue: #6ea8fe;
+    --green: #27c78a;
+    --red: #ef6b68;
 }
 
 .stApp {
@@ -52,150 +52,188 @@ st.markdown(
     font-family: Helvetica, Arial, sans-serif;
 }
 
-html, body, [class*="css"] {
+html, body {
     font-family: Helvetica, Arial, sans-serif;
 }
 
-[data-testid="stSidebar"] {
-    background: #0a0d11;
-    border-right: 1px solid var(--border);
-}
-
-[data-testid="stSidebar"] * {
+.stApp [data-testid="stMarkdownContainer"],
+.stApp [data-testid="stText"],
+.stApp p,
+.stApp h1,
+.stApp h2,
+.stApp h3,
+.stApp label {
     font-family: Helvetica, Arial, sans-serif;
 }
 
 .block-container {
-    max-width: 1500px;
-    padding-top: 1rem;
-    padding-bottom: 2rem;
+    max-width: 1440px;
+    padding-top: 4.5rem !important;
+    padding-bottom: 3rem;
+}
+
+[data-testid="stSidebar"] {
+    background: #0b0f14;
+    border-right: 1px solid var(--border);
+}
+
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] *,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] button {
+    font-family: Helvetica, Arial, sans-serif;
+}
+
+/* Never override Streamlit / Material Symbols fonts.
+   Otherwise icon ligatures render as literal text such as keyboard_double_arrow. */
+.material-symbols-rounded,
+.material-symbols-outlined,
+[class*="material-symbols"],
+[data-testid="stSidebar"] [class*="material-symbols"] {
+    font-family: "Material Symbols Rounded", "Material Symbols Outlined", sans-serif !important;
+    font-feature-settings: "liga";
 }
 
 .terminal-topbar {
-    background: #0b0e12;
+    background: linear-gradient(180deg, #111821 0%, #0d1218 100%);
     border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    padding: 12px 16px;
-    margin-bottom: 12px;
+    border-left: 4px solid var(--accent);
+    padding: 16px 20px;
+    margin: 0 0 18px 0;
+    border-radius: 7px;
+}
+
+.terminal-kicker,
+.page-kicker,
+.section-kicker {
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 1.3px;
+    font-size: 10px;
+    font-weight: 700;
 }
 
 .terminal-brand {
-    font-size: 23px;
-    font-weight: 700;
-    letter-spacing: .4px;
-}
-
-.terminal-kicker {
-    color: var(--accent);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-    font-weight: 700;
+    font-size: 28px;
+    font-weight: 750;
+    margin-top: 3px;
 }
 
 .terminal-sub {
     color: var(--muted);
-    font-size: 12px;
-    margin-top: 3px;
+    font-size: 13px;
+    line-height: 1.45;
+    margin-top: 5px;
 }
 
-.section-kicker {
-    color: var(--accent);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 1.4px;
-    font-weight: 700;
-    margin-top: 8px;
+.page-hero {
+    padding: 8px 0 16px;
 }
 
-.hero {
-    padding: 20px 0 14px 0;
+.page-title {
+    font-size: 38px;
+    font-weight: 750;
+    line-height: 1.08;
+    margin: 5px 0 8px;
 }
 
-.hero-title {
-    font-size: 34px;
-    line-height: 1.04;
-    font-weight: 700;
-    margin: 4px 0;
-}
-
-.hero-copy {
-    max-width: 820px;
+.page-copy {
     color: var(--muted);
+    max-width: 940px;
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+.guide-box {
+    background: #101720;
+    border: 1px solid #354251;
+    border-left: 3px solid var(--accent);
+    border-radius: 7px;
+    padding: 14px 16px;
+    margin: 8px 0 18px;
+}
+
+.guide-title {
     font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 5px;
+}
+
+.guide-copy {
+    color: var(--muted);
+    font-size: 13px;
     line-height: 1.55;
 }
 
-.card {
+.guide-step {
+    margin-top: 6px;
+}
+
+.info-card {
     background: var(--panel);
     border: 1px solid var(--border);
+    border-radius: 7px;
     padding: 16px;
+    min-height: 125px;
 }
 
-.card-title {
+.info-card h4 {
+    margin: 0 0 8px;
+    font-size: 15px;
+}
+
+.info-card p {
+    color: var(--muted);
     font-size: 13px;
-    font-weight: 700;
-    margin-bottom: 4px;
+    line-height: 1.55;
+    margin: 0;
 }
 
-.card-copy {
+.status-chip {
+    display: inline-block;
+    border: 1px solid #3b4653;
+    background: #111820;
     color: var(--muted);
-    font-size: 12px;
-    line-height: 1.45;
-}
-
-.metric-card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-top: 2px solid var(--accent);
-    padding: 12px 14px;
-}
-
-.metric-label {
-    color: var(--muted);
-    font-size: 10px;
-    letter-spacing: 1px;
-}
-
-.metric-value {
-    font-size: 24px;
-    font-weight: 700;
-    margin-top: 2px;
-}
-
-.metric-note {
-    color: var(--muted);
-    font-size: 10px;
-    margin-top: 2px;
-}
-
-.signal-green {
-    color: var(--green);
-    font-weight: 700;
-}
-
-.signal-red {
-    color: var(--red);
-    font-weight: 700;
-}
-
-.small-note {
-    color: var(--muted);
+    padding: 5px 10px;
+    border-radius: 999px;
     font-size: 11px;
+    margin: 0 4px 8px 0;
+}
+
+.status-chip.green {
+    color: var(--green);
+    border-color: #1f6a50;
+}
+
+.status-chip.orange {
+    color: var(--accent);
+    border-color: #735919;
+}
+
+.status-chip.red {
+    color: var(--red);
+    border-color: #69302e;
+}
+
+.section-title {
+    font-size: 20px;
+    font-weight: 750;
+    margin: 22px 0 9px;
 }
 
 div[data-testid="stMetric"] {
     background: var(--panel);
     border: 1px solid var(--border);
     border-top: 2px solid var(--accent);
-    padding: 8px 12px;
+    border-radius: 6px;
 }
 
 .stButton > button,
 .stDownloadButton > button {
-    border-radius: 2px;
-    border: 1px solid #4b5563;
-    background: #12171e;
+    min-height: 42px;
+    border-radius: 5px;
+    border: 1px solid #4a5665;
+    background: #141b24;
     color: var(--text);
     font-weight: 700;
 }
@@ -203,31 +241,71 @@ div[data-testid="stMetric"] {
 .stButton > button:hover,
 .stDownloadButton > button:hover {
     border-color: var(--accent);
-    background: #171d25;
+    background: #1a222c;
 }
 
 div[data-testid="stDataFrame"] {
     border: 1px solid var(--border);
+    border-radius: 6px;
 }
 
-div[data-baseweb="tab-list"] {
-    gap: 2px;
-}
-
-button[data-baseweb="tab"] {
-    background: #0b0f14;
-    border: 1px solid var(--border);
+.small-note {
     color: var(--muted);
-}
-
-button[data-baseweb="tab"][aria-selected="true"] {
-    color: var(--text);
-    border-bottom: 2px solid var(--accent);
+    font-size: 11px;
+    line-height: 1.45;
 }
 
 hr {
     border-color: var(--border);
 }
+
+.product-pill {
+    display: inline-block;
+    padding: 4px 9px;
+    border-radius: 999px;
+    border: 1px solid #3a4653;
+    background: #111821;
+    color: #cbd5e1;
+    font-size: 10px;
+    letter-spacing: .7px;
+    text-transform: uppercase;
+    margin-right: 5px;
+}
+.product-pill.accent {
+    color: #f0a51a;
+    border-color: #735919;
+}
+
+
+@media (max-width: 768px) {
+    .block-container {
+        padding-top: 5.25rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+
+    .terminal-topbar {
+        margin-top: 0;
+        padding: 14px 15px;
+    }
+
+    .terminal-brand {
+        font-size: 22px;
+    }
+
+    .page-title {
+        font-size: 30px;
+    }
+
+    .page-copy {
+        font-size: 14px;
+    }
+
+    [data-testid="stSidebar"] {
+        width: min(86vw, 360px);
+    }
+}
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -239,22 +317,60 @@ hr {
 # -------------------------------------------------------------------
 
 def terminal_header(page_title: str, subtitle: str):
-    universe_count = (
-        len(st.session_state.get("universe", []))
-        if "universe" in st.session_state
-        else 0
-    )
-    scan_date = st.session_state.get("scan_date", "NOT RUN")
+    universe_count = len(st.session_state.get("universe", []))
+    scan_date = st.session_state.get("scan_date", "Not run")
 
     st.markdown(
         f"""
 <div class="terminal-topbar">
-  <div class="terminal-kicker">NSE EQUITY RESEARCH TERMINAL</div>
-  <div class="terminal-brand">NIFTY MARKET TERMINAL</div>
-  <div class="terminal-sub">
-      {page_title} · {subtitle} · UNIVERSE {universe_count or "—"}
-      · LAST SCAN {scan_date}
-  </div>
+  <div class="terminal-kicker">NIFTY MARKET TERMINAL</div>
+  <div class="terminal-brand">{page_title}</div>
+  <div class="terminal-sub">{subtitle}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    if "snapshot" in st.session_state:
+        status = '<span class="status-chip green">SCAN READY</span>'
+    else:
+        status = '<span class="status-chip orange">RUN A SCAN FIRST</span>'
+
+    st.markdown(
+        f"""
+<div>
+  {status}
+  <span class="status-chip">Universe: {universe_count or "Not scanned"}</span>
+  <span class="status-chip">Last scan: {scan_date}</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def page_intro(title: str, copy: str):
+    st.markdown(
+        f"""
+<div class="page-hero">
+  <div class="page-kicker">Research guide</div>
+  <div class="page-title">{title}</div>
+  <div class="page-copy">{copy}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def guide(title: str, copy: str, steps=None):
+    items = ""
+    for i, step in enumerate(steps or [], start=1):
+        items += f'<div class="guide-step"><b>{i}.</b> {step}</div>'
+
+    st.markdown(
+        f"""
+<div class="guide-box">
+  <div class="guide-title">{title}</div>
+  <div class="guide-copy">{copy}{items}</div>
 </div>
 """,
         unsafe_allow_html=True,
@@ -286,11 +402,21 @@ def market_chart(
     frame: pd.DataFrame,
     symbol: str,
     overlays: list[str],
+    rsi_col: str = "RSI14",
     days: int = 180,
+    cross_columns: list[str] | None = None,
+    rsi_lines: list[tuple[float, str]] | None = None,
 ):
+    """Bloomberg-style price + strategy indicators + RSI chart."""
     chart = frame.sort_values("Date").tail(days).copy()
 
-    fig = go.Figure()
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.035,
+        row_heights=[0.76, 0.24],
+    )
 
     fig.add_trace(
         go.Candlestick(
@@ -301,46 +427,115 @@ def market_chart(
             close=chart["Close"],
             name=symbol,
             increasing_line_color="#26c281",
+            increasing_fillcolor="#26c281",
             decreasing_line_color="#ef6461",
-        )
+            decreasing_fillcolor="#ef6461",
+        ),
+        row=1,
+        col=1,
     )
 
     colors = {
         "EMA9": "#6ea8fe",
         "EMA21": "#f0a51a",
-        "SMA20": "#8b5cf6",
+        "SMA20": "#b084f5",
         "SMA50": "#14b8a6",
         "SMA200": "#ef4444",
         "EMA255": "#f59e0b",
     }
 
     for col in overlays:
-        if col in chart.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=chart["Date"],
-                    y=chart[col],
-                    mode="lines",
-                    name=col,
-                    line={
-                        "width": 1.7,
-                        "color": colors.get(col, "#cbd5e1"),
-                    },
-                )
+        if col not in chart.columns:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=chart["Date"],
+                y=chart[col],
+                mode="lines",
+                name=col,
+                line={"width": 1.8, "color": colors.get(col, "#cbd5e1")},
+            ),
+            row=1,
+            col=1,
+        )
+
+    for cross_col in cross_columns or []:
+        if cross_col not in chart.columns:
+            continue
+        marks = chart.loc[chart[cross_col].fillna(False)]
+        if marks.empty:
+            continue
+        label = {
+            "Cross9_21": "9/21 Bullish Cross",
+            "Cross20_50": "20/50 Bullish Cross",
+            "Cross50_200": "Golden Cross",
+        }.get(cross_col, "Bullish Cross")
+        fig.add_trace(
+            go.Scatter(
+                x=marks["Date"],
+                y=marks["Close"],
+                mode="markers",
+                name=label,
+                marker={
+                    "symbol": "triangle-up",
+                    "size": 9,
+                    "color": "#26c281",
+                    "line": {"color": "#080a0d", "width": 1},
+                },
+            ),
+            row=1,
+            col=1,
+        )
+
+    if rsi_col in chart.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=chart["Date"],
+                y=chart[rsi_col],
+                mode="lines",
+                name=rsi_col,
+                line={"width": 1.7, "color": "#8ab4ff"},
+            ),
+            row=2,
+            col=1,
+        )
+        for level, label in (rsi_lines or [(30, "RSI 30"), (70, "RSI 70")]):
+            fig.add_hline(
+                y=level,
+                row=2,
+                col=1,
+                line_dash="dot",
+                line_color="#46515f",
+                line_width=1,
+                annotation_text=label,
+                annotation_position="top left",
+                annotation_font={"size": 9, "color": "#7f8b99"},
             )
 
     fig.update_layout(
-        height=520,
-        margin={"l": 10, "r": 10, "t": 30, "b": 10},
+        height=610,
+        margin={"l": 8, "r": 8, "t": 40, "b": 10},
         paper_bgcolor="#080a0d",
         plot_bgcolor="#080a0d",
         font={"family": "Helvetica, Arial, sans-serif", "color": "#e9eef3"},
-        xaxis={"gridcolor": "#1d232b", "rangeslider_visible": False},
-        yaxis={"gridcolor": "#1d232b"},
-        legend={"orientation": "h", "y": 1.02, "x": 0},
+        legend={"orientation": "h", "y": 1.03, "x": 0, "font": {"size": 10}},
         hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        xaxis2_rangeslider_visible=False,
     )
-
+    fig.update_xaxes(gridcolor="#1d232b", linecolor="#252c35", showline=False, zeroline=False)
+    fig.update_yaxes(gridcolor="#1d232b", linecolor="#252c35", showline=False, zeroline=False, row=1, col=1)
+    fig.update_yaxes(
+        gridcolor="#1d232b",
+        linecolor="#252c35",
+        showline=False,
+        zeroline=False,
+        range=[0, 100],
+        title_text="RSI",
+        title_font={"size": 10, "color": "#8c98a6"},
+        row=2,
+        col=1,
+    )
     return fig
 
 
@@ -351,148 +546,143 @@ def market_chart(
 def home_page():
     terminal_header(
         "Home",
-        "A simple workflow for finding structured equity setups",
+        "A guided workspace for finding and researching Indian equity setups",
     )
 
-    st.markdown(
-        """
-<div class="hero">
-  <div class="section-kicker">Market research workspace</div>
-  <div class="hero-title">Find. Filter. Validate.</div>
-  <div class="hero-copy">
-    Scan India's broad listed-equity universe, separate market regime from
-    momentum and pullback conditions, then use convergence to create a short
-    research list. The terminal is designed as a decision-support tool, not
-    an automatic trading system.
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
+    page_intro(
+        "Find the signal. Check the context. Do your homework.",
+        "Start with one market scan, explore a setup that matches your style, "
+        "inspect the chart, and then move to the shortlist. You do not need to "
+        "understand every indicator to use the app.",
     )
 
-    if "universe" not in st.session_state:
-        ucount = "—"
-    else:
-        ucount = f"{len(st.session_state['universe']):,}"
+    guide(
+        "Start here. Let's scan.",
+        "The workflow is simple. The analysis underneath it is not.",
+        [
+            "Scan the market once. The result is reused across the app.",
+            "Open Market Health, Momentum, Swing, or Pullback.",
+            "Check the stock's chart before treating a signal as meaningful.",
+            "Use Confluence and Shortlist to narrow your research list.",
+        ],
+    )
 
     snapshot = st.session_state.get("snapshot", pd.DataFrame())
     conv = st.session_state.get("convergence", pd.DataFrame())
+    universe_count = len(st.session_state.get("universe", []))
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("UNIVERSE", ucount)
-    c2.metric("STOCKS SCANNED", f"{len(snapshot):,}")
+    c1.metric("Stocks in universe", f"{universe_count:,}" if universe_count else "—")
+    c2.metric("Stocks scanned", f"{len(snapshot):,}" if not snapshot.empty else "—")
     c3.metric(
-        "BULLISH REGIME",
-        (
-            f"{int(snapshot['BullRegime'].sum()):,}"
-            if not snapshot.empty
-            else "—"
-        ),
+        "Bullish long-term trend",
+        f"{int(snapshot['BullRegime'].sum()):,}" if not snapshot.empty else "—",
     )
     c4.metric(
-        "HIGH-CONVICTION",
-        (
-            f"{int((conv['ConvergenceScore'] >= 65).sum()):,}"
-            if not conv.empty
-            else "—"
-        ),
+        "High-conviction candidates",
+        f"{int((conv['ConvergenceScore'] >= 65).sum()):,}" if not conv.empty else "—",
     )
 
-    st.markdown('<div class="section-kicker">Research modules</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">What each section means</div>', unsafe_allow_html=True)
 
-    modules = st.columns(4)
+    cards = st.columns(4)
+    sections = [
+        (
+            "Market Health",
+            "The big-picture filter. Tells you whether the long-term trend is helping or fighting you.",
+        ),
+        (
+            "Momentum",
+            "Fast money, fast signals. Spots fresh short-term momentum using the 9/21 EMA.",
+        ),
+        (
+            "Swing",
+            "The calmer setup. Looks for multi-week trend alignment using the 20/50 averages.",
+        ),
+        (
+            "Pullback",
+            "Hunting the pullback. Finds oversold names sitting close to their long-term EMA 255.",
+        ),
+    ]
 
-    with modules[0]:
-        card(
-            "01 · MARKET REGIME",
-            "Is the long-term structure supportive? Uses 50/200 SMA and price location.",
-        )
+    for col, (title, text) in zip(cards, sections):
+        with col:
+            card(title, text)
 
-    with modules[1]:
-        card(
-            "02 · MOMENTUM",
-            "Short-term direction and fresh 9/21 EMA crossovers.",
-        )
+    st.markdown('<div class="section-title">How to read a stock</div>', unsafe_allow_html=True)
 
-    with modules[2]:
-        card(
-            "03 · SWING STRUCTURE",
-            "Medium-term trend alignment using 20/50 SMA.",
-        )
-
-    with modules[3]:
-        card(
-            "04 · PULLBACK",
-            "Potential oversold pullbacks near EMA 255.",
-        )
-
-    st.markdown('<div class="section-kicker">How to use</div>', unsafe_allow_html=True)
-
-    steps = st.columns(4)
-    for i, (title, copy) in enumerate(
-        [
-            ("1. Scan", "Download one shared price dataset for the whole universe."),
-            ("2. Explore", "Review each strategy as a separate market dimension."),
-            ("3. Converge", "Use Trend Score + Entry Score rather than double-counting indicators."),
-            ("4. Shortlist", "Only finalists receive slower fundamental enrichment."),
-        ]
-    ):
-        with steps[i]:
-            card(title, copy)
+    read = st.columns(3)
+    with read[0]:
+        card("Signal", "The rule that made the stock qualify.")
+    with read[1]:
+        card("Chart", "The price action that tells you whether the signal looks healthy or weak.")
+    with read[2]:
+        card("Fundamentals", "Valuation and business-quality fields to review after technical screening.")
 
     st.caption(
-        "Data source: NSE constituent files + Yahoo Finance daily prices. "
-        "Signals are research candidates and are not investment advice."
+        "Research tool only. Signals are not investment recommendations and are not guarantees of future returns."
     )
 
 
 def scan_page():
     terminal_header(
         "Scan Engine",
-        "One shared download. All strategies reuse the result.",
+        "Run one shared scan and reuse it everywhere else",
     )
 
-    st.markdown(
-        '<div class="section-kicker">Market data controls</div>',
-        unsafe_allow_html=True,
+    page_intro(
+        "Scan the market once.",
+        "Choose your universe and history. The scanner downloads daily market data "
+        "and calculates the indicators used by every strategy. You do not need to "
+        "repeat the download for each page.",
     )
 
-    c1, c2, c3, c4 = st.columns([1.4, 1, 1, 1])
+    guide(
+        "Recommended setup",
+        "For normal use, keep the defaults. A 4-year history gives enough context "
+        "for the long moving averages while keeping the scan practical on free hosting.",
+        [
+            "Select Nifty Total Market for the broadest current universe.",
+            "Keep 4 years of history.",
+            "Click Run Market Scan and wait for the data-quality result.",
+        ],
+    )
+
+    c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
 
     with c1:
         universe_name = st.selectbox(
-            "Universe",
+            "Stock universe",
             ["NIFTY TOTAL MARKET", "NIFTY 500"],
             index=0,
+            help="Nifty Total Market gives the broadest screen.",
         )
 
     with c2:
         history_years = st.selectbox(
-            "History",
+            "Price history",
             [3, 4, 5],
             index=1,
         )
 
     with c3:
         batch_size = st.select_slider(
-            "Batch size",
+            "Download chunk",
             options=[50, 75, 100],
             value=75,
+            help="Smaller chunks can be more resilient to public-data limits.",
         )
 
     with c4:
-        if st.button(
+        run_scan = st.button(
             "RUN MARKET SCAN",
             type="primary",
             use_container_width=True,
-        ):
-            run_scan = True
-        else:
-            run_scan = False
+        )
 
     if run_scan:
         try:
-            with st.spinner("Loading current universe..."):
+            with st.spinner("Loading the current stock universe..."):
                 universe = load_universe(universe_name)
 
             progress = st.progress(0)
@@ -501,8 +691,8 @@ def scan_page():
             def update(batch, total, failures):
                 progress.progress(batch / total)
                 status.write(
-                    f"Downloading batch {batch}/{total} · "
-                    f"unresolved {failures}"
+                    f"Downloading market data: {batch}/{total} · "
+                    f"unresolved symbols: {failures}"
                 )
 
             prices, failures = download_prices(
@@ -513,10 +703,10 @@ def scan_page():
             )
 
             if prices.empty:
-                st.error("No price data returned.")
+                st.error("No usable market data was returned.")
                 st.stop()
 
-            status.write("Calculating all indicators once...")
+            status.write("Calculating indicators...")
             indicators = calculate_indicators(prices)
             snapshot = latest_snapshot(indicators, universe)
             snapshot = add_days_since_cross(indicators, snapshot)
@@ -528,19 +718,20 @@ def scan_page():
             st.session_state["snapshot"] = snapshot
             st.session_state["convergence"] = convergence
             st.session_state["failures"] = failures
-            st.session_state["scan_date"] = (
-                datetime.now().strftime("%Y-%m-%d %H:%M")
-            )
+            st.session_state["scan_date"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
             progress.empty()
             status.empty()
 
             st.success(
-                f"Scan complete. {len(snapshot):,} stocks processed."
+                f"Scan complete. {len(snapshot):,} stocks have usable daily history."
             )
 
         except Exception as exc:
-            st.error("The market scan failed.")
+            st.error(
+                "The market scan could not be completed. "
+                "Try again or reduce the download chunk."
+            )
             with st.expander("Technical details"):
                 st.exception(exc)
 
@@ -548,24 +739,13 @@ def scan_page():
         snapshot = st.session_state["snapshot"]
         failures = st.session_state.get("failures", [])
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("CONSTITUENTS", f"{len(st.session_state['universe']):,}")
-        m2.metric("PRICE SERIES", f"{len(snapshot):,}")
-        m3.metric(
-            "BULLISH REGIME",
-            f"{int(snapshot['BullRegime'].sum()):,}",
-        )
-        m4.metric(
-            "PULLBACK SETUPS",
-            f"{int(snapshot['Pullback'].sum()):,}",
-        )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Universe", f"{len(st.session_state['universe']):,}")
+        c2.metric("Usable price histories", f"{len(snapshot):,}")
+        c3.metric("Bullish long-term trend", f"{int(snapshot['BullRegime'].sum()):,}")
+        c4.metric("Oversold pullbacks", f"{int(snapshot['Pullback'].sum()):,}")
 
-        if failures:
-            st.warning(
-                f"{len(failures)} symbols remained unresolved after retry."
-            )
-
-        st.markdown('<div class="section-kicker">Data quality</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Data quality</div>', unsafe_allow_html=True)
 
         q1, q2, q3 = st.columns(3)
         q1.metric(
@@ -573,19 +753,26 @@ def scan_page():
             f"{len(snapshot) / max(len(st.session_state['universe']), 1) * 100:.1f}%",
         )
         q2.metric(
-            "Latest observation",
+            "Latest market date",
             pd.to_datetime(snapshot["Date"]).max().strftime("%d %b %Y"),
         )
-        q3.metric(
-            "Stored history",
-            f"{len(st.session_state['prices']):,} daily rows",
-        )
+        q3.metric("Unresolved symbols", f"{len(failures):,}")
+
+        if failures:
+            st.warning(
+                f"{len(failures)} symbols did not return usable history and were excluded."
+            )
 
         st.download_button(
-            "EXPORT SNAPSHOT CSV",
+            "EXPORT MARKET SNAPSHOT",
             data=snapshot.to_csv(index=False).encode(),
-            file_name="nifty_total_market_snapshot.csv",
+            file_name="nifty_market_snapshot.csv",
             mime="text/csv",
+        )
+
+        guide(
+            "You're ready",
+            "Use the top menu to explore a strategy. The strategy pages reuse this exact scan."
         )
 
 
@@ -616,6 +803,46 @@ def strategy_page(strategy: str):
 
     title, subtitle = titles[strategy]
     terminal_header(title, subtitle)
+
+    explanations = {
+        "regime": (
+            "How to use Market Health",
+            "This is the background environment. It asks whether the long-term structure is supportive.",
+            [
+                "Bullish structure means the 50-day average is above the 200-day average.",
+                "Use this as context, not as a standalone buy signal.",
+            ],
+        ),
+        "momentum": (
+            "How to use Momentum",
+            "This page finds short-term changes in direction using the 9 and 21 EMA.",
+            [
+                "Fresh Cross means the 9 EMA has recently crossed above the 21 EMA.",
+                "Bullish Momentum means the 9 EMA is currently above the 21 EMA.",
+                "Use the chart to judge whether the move is fresh or already extended.",
+            ],
+        ),
+        "swing": (
+            "How to use Swing",
+            "This page looks for medium-term alignment between the 20-day and 50-day averages.",
+            [
+                "A bullish structure means the faster average is above the slower average.",
+                "Check the long-term trend and chart before considering the setup.",
+            ],
+        ),
+        "pullback": (
+            "How to use Pullback",
+            "This page finds stocks that are short-term oversold and close to EMA 255.",
+            [
+                "RSI below 35 means the stock is short-term oversold.",
+                "Within ±2% of EMA 255 means price is close to the long-term reference.",
+                "A pullback can keep falling. Use the chart to look for stabilisation.",
+            ],
+        ),
+    }
+
+    g_title, g_copy, g_steps = explanations[strategy]
+    guide(g_title, g_copy, g_steps)
 
     if strategy == "regime":
         mask = snapshot["BullRegime"]
@@ -719,38 +946,69 @@ def strategy_page(strategy: str):
 
     st.markdown('<div class="section-kicker">Chart console</div>', unsafe_allow_html=True)
 
-    if not table.empty:
-        chosen = st.selectbox(
-            "Select stock",
-            table["Symbol"].tolist(),
-        )
+    show_chart = st.toggle(
+        "SHOW STRATEGY CHART",
+        value=True,
+        key=f"chart_toggle_{strategy}",
+    )
 
-        row = snapshot.loc[
-            snapshot["Symbol"] == chosen
-        ].iloc[0]
+    if show_chart and not table.empty:
+        chart_col_1, chart_col_2 = st.columns([2, 1])
 
-        frame = prices.loc[
-            prices["Yahoo Symbol"] == row["Yahoo Symbol"]
+        with chart_col_1:
+            chosen = st.selectbox(
+                "Select stock",
+                table["Symbol"].tolist(),
+                key=f"chart_stock_{strategy}",
+            )
+
+        with chart_col_2:
+            chart_days = st.selectbox(
+                "Chart window",
+                [90, 180, 252, 365],
+                index=1,
+                key=f"chart_days_{strategy}",
+            )
+
+        row = snapshot.loc[snapshot["Symbol"] == chosen].iloc[0]
+        frame = indicators.loc[
+            indicators["Yahoo Symbol"] == row["Yahoo Symbol"]
         ].copy()
 
         if strategy == "regime":
             overlays = ["SMA50", "SMA200"]
+            crosses = ["Cross50_200"]
+            rsi_levels = [(30, "RSI 30"), (70, "RSI 70")]
+            chart_note = "50/200 regime + RSI context"
         elif strategy == "momentum":
             overlays = ["EMA9", "EMA21", "EMA255"]
+            crosses = ["Cross9_21"]
+            rsi_levels = [(50, "RSI 50"), (70, "RSI 70")]
+            chart_note = "9/21 momentum + EMA 255 trend + RSI"
         elif strategy == "swing":
             overlays = ["SMA20", "SMA50", "EMA255"]
+            crosses = ["Cross20_50"]
+            rsi_levels = [(50, "RSI 50"), (70, "RSI 70")]
+            chart_note = "20/50 swing structure + EMA 255 + RSI"
         else:
             overlays = ["EMA255"]
+            crosses = []
+            rsi_levels = [(35, "BUY ZONE 35"), (50, "RSI 50"), (70, "RSI 70")]
+            chart_note = "EMA 255 pullback + RSI buy-zone"
 
+        st.caption(chart_note)
         st.plotly_chart(
             market_chart(
                 frame,
                 chosen,
                 overlays,
-                days=180,
+                rsi_col="RSI14",
+                days=int(chart_days),
+                cross_columns=crosses,
+                rsi_lines=rsi_levels,
             ),
             use_container_width=True,
-            config={"displaylogo": False},
+            config={"displaylogo": False, "scrollZoom": True},
         )
 
 
@@ -823,6 +1081,38 @@ def convergence_page():
         file_name="nifty_total_market_convergence.csv",
         mime="text/csv",
     )
+
+    st.markdown('<div class="section-kicker">Convergence chart</div>', unsafe_allow_html=True)
+    show_chart = st.toggle(
+        "SHOW CONVERGENCE CHART",
+        value=True,
+        key="chart_toggle_convergence",
+    )
+
+    if show_chart and not output.empty:
+        selected = st.selectbox(
+            "Select stock",
+            output["Symbol"].tolist(),
+            key="chart_stock_convergence",
+        )
+        row = df.loc[df["Symbol"] == selected].iloc[0]
+        frame = st.session_state["indicators"].loc[
+            st.session_state["indicators"]["Yahoo Symbol"] == row["Yahoo Symbol"]
+        ].copy()
+        st.caption("All major moving averages + crossover markers + RSI 14")
+        st.plotly_chart(
+            market_chart(
+                frame,
+                selected,
+                ["EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255"],
+                rsi_col="RSI14",
+                days=252,
+                cross_columns=["Cross9_21", "Cross20_50", "Cross50_200"],
+                rsi_lines=[(30, "RSI 30"), (50, "RSI 50"), (70, "RSI 70")],
+            ),
+            use_container_width=True,
+            config={"displaylogo": False, "scrollZoom": True},
+        )
 
 
 def buying_list_page():
@@ -937,20 +1227,23 @@ def buying_list_page():
             final["Symbol"] == selected
         ].iloc[0]
 
-        frame = st.session_state["prices"].loc[
-            st.session_state["prices"]["Yahoo Symbol"]
-            == row["Yahoo Symbol"]
+        frame = st.session_state["indicators"].loc[
+            st.session_state["indicators"]["Yahoo Symbol"] == row["Yahoo Symbol"]
         ].copy()
 
+        st.caption("All major moving averages + crossover markers + RSI 14")
         st.plotly_chart(
             market_chart(
                 frame,
                 selected,
                 ["EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255"],
+                rsi_col="RSI14",
                 days=252,
+                cross_columns=["Cross9_21", "Cross20_50", "Cross50_200"],
+                rsi_lines=[(30, "RSI 30"), (35, "BUY ZONE 35"), (50, "RSI 50"), (70, "RSI 70")],
             ),
             use_container_width=True,
-            config={"displaylogo": False},
+            config={"displaylogo": False, "scrollZoom": True},
         )
 
 
@@ -979,7 +1272,7 @@ def pullback_page():
 
 
 pages = {
-    "Overview": [
+    "Start": [
         st.Page(
             home_page,
             title="Home",
@@ -988,7 +1281,7 @@ pages = {
             default=True,
         ),
     ],
-    "Workflow": [
+    "Scan": [
         st.Page(
             scan_page,
             title="Scan Engine",
@@ -996,7 +1289,7 @@ pages = {
             url_path="scan-engine",
         ),
     ],
-    "Strategies": [
+    "Explore": [
         st.Page(
             regime_page,
             title="Market Regime",
@@ -1012,7 +1305,7 @@ pages = {
         st.Page(
             swing_page,
             title="20/50 Swing",
-            icon="📈",
+            icon="📊",
             url_path="swing-20-50",
         ),
         st.Page(
@@ -1022,33 +1315,37 @@ pages = {
             url_path="ema-255-pullback",
         ),
     ],
-    "Decision": [
+    "Decide": [
         st.Page(
             convergence_page,
-            title="Convergence",
+            title="Confluence",
             icon="🎯",
-            url_path="convergence",
+            url_path="confluence",
         ),
         st.Page(
             buying_list_page,
-            title="Final Buying List",
+            title="Final Buy List",
             icon="⭐",
-            url_path="buying-list",
+            url_path="final-buy-list",
         ),
     ],
 }
 
 pg = st.navigation(
     pages,
-    position="top",
+    position="sidebar",
 )
 
 with st.sidebar:
     st.markdown(
         """
-<div class="section-kicker">Terminal controls</div>
+<div class="section-kicker">Quick start</div>
 <div class="small-note">
-Use Scan Engine once. Every strategy page reads the shared cached dataset.
+<b>1.</b> Run Scan Engine<br>
+<b>2.</b> Explore a setup<br>
+<b>3.</b> Check the chart<br>
+<b>4.</b> Open Confluence<br>
+<b>5.</b> Open Final Buy List
 </div>
 """,
         unsafe_allow_html=True,
@@ -1057,7 +1354,7 @@ Use Scan Engine once. Every strategy page reads the shared cached dataset.
     if "snapshot" in st.session_state:
         st.success("SCAN READY")
     else:
-        st.warning("NO ACTIVE SCAN")
+        st.warning("RUN A MARKET SCAN")
 
     st.divider()
 
