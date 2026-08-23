@@ -1,71 +1,55 @@
-# Nifty 500 EMA Scanner
 
-A Streamlit Community Cloud-ready application that scans the current Nifty 500
-for stocks that most recently touched a selected exponential moving average.
+# Nifty Market Terminal
 
-## Features
+Bloomberg-inspired, retail-friendly technical screening terminal for the
+Nifty Total Market universe.
 
-- No API key
-- Current Nifty 500 constituent download with fallback URL
-- Automatic NSE to Yahoo ticker mapping: `SYMBOL.NS`
-- Batch historical downloads
-- Retry logic for failed batches and individual tickers
-- Cached constituent and market-data requests
-- Configurable EMA period
-- Wick-touch or close-near-EMA signal definitions
-- Latest occurrence retained for every stock
-- Ranking by newest occurrence date
-- Interactive filtering
-- CSV download
-- Failed ticker report
+## Architecture
 
-## Repository layout
+The app uses one shared market scan:
+
+1. Download the current universe.
+2. Batch-download daily OHLCV data.
+3. Calculate all technical indicators once.
+4. Reuse the cached result across strategy pages.
+5. Fetch fundamentals only for final candidates.
+
+This keeps the app much lighter than running a separate data download for each
+strategy.
+
+## Current strategy modules
+
+- Market Regime: 50/200 SMA context
+- 9/21 Momentum: short-term momentum
+- 20/50 Swing: medium-term structure
+- EMA 255 Pullback: RSI < 35 and within ±2% of EMA 255
+- Convergence: Trend Score + Entry Score
+- Final Buying List: top research candidates with fundamentals
+
+## Data sources
+
+- NSE index constituent files for the universe
+- Yahoo Finance daily OHLCV via `yfinance`
+
+No broker API key is required.
+
+## Deploy
+
+Upload these files to a GitHub repository:
 
 ```text
 .
-├── app.py
+├── streamlit_app.py
+├── engine.py
 ├── requirements.txt
-├── README.md
 └── .streamlit/
     └── config.toml
 ```
 
-## Local run
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-## Deploy on Streamlit Community Cloud
-
-1. Create a GitHub repository.
-2. Upload the entire project, keeping `app.py` and `requirements.txt` in the root.
-3. Open Streamlit Community Cloud.
-4. Create an app and select the GitHub repository.
-5. Select the `main` branch and `app.py`.
-6. Deploy.
-
-No secrets or API keys are required.
-
-## Signal definition
-
-### Wick touch
-
-```text
-Low <= EMA <= High
-```
-
-### Close near EMA
-
-```text
-abs(Close - EMA) / EMA <= tolerance
-```
-
-Only the most recent qualifying touch for each stock is retained.
+Then deploy `streamlit_app.py` on Streamlit Community Cloud.
 
 ## Notes
 
-The app uses `yfinance` to access public Yahoo Finance data. Availability,
-ticker coverage, and response reliability can occasionally vary. The app reports
-tickers that remain unresolved after retries instead of failing the entire scan.
+The scanner is decision-support software. It is not a trading system or
+investment recommendation. Crossover and RSI signals should be validated with
+out-of-sample testing before real-money use.
