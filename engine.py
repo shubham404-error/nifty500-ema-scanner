@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import time
+import random
 from datetime import date, timedelta
 from typing import Callable
 
@@ -30,77 +31,63 @@ NIFTY500_URLS = [
 ]
 
 MICROCAP250_URLS = [
+    # Primary official URL. The archive URL used in older builds returned 404.
     "https://www.niftyindices.com/IndexConstituent/ind_niftymicrocap250_list.csv",
+    "https://niftyindices.com/IndexConstituent/ind_niftymicrocap250_list.csv",
 ]
 
 
 def _read_nse_csv(urls: list[str]) -> pd.DataFrame:
-    errors = []
+    """Read an official NSE/Nifty constituent CSV with bounded retries.
+
+    A source is accepted only after schema and minimum-size validation. This
+    prevents an HTML error page or partial response from silently becoming the
+    market universe.
+    """
+    errors: list[str] = []
+    session = requests.Session()
+    session.headers.update(NSE_HEADERS)
 
     for url in urls:
-        try:
-            r = requests.get(url, headers=NSE_HEADERS, timeout=30)
-            r.raise_for_status()
-            df = pd.read_csv(io.StringIO(r.text))
+        for attempt in range(3):
+            try:
+                response = session.get(url, timeout=(10, 30))
+                response.raise_for_status()
+                text = response.content.decode("utf-8-sig", errors="replace")
+                if "<html" in text[:500].lower():
+                    raise ValueError("received HTML instead of CSV")
 
-            normalized = {
-                str(c).strip().lower(): c
-                for c in df.columns
-            }
-
-            symbol_col = normalized.get("symbol")
-            company_col = (
-                normalized.get("company name")
-                or normalized.get("company")
-                or normalized.get("name")
-            )
-
-            if not symbol_col:
-                raise ValueError(
-                    f"Symbol column not found. Columns: {df.columns.tolist()}"
+                df = pd.read_csv(io.StringIO(text))
+                normalized = {str(c).strip().lower(): c for c in df.columns}
+                symbol_col = normalized.get("symbol")
+                company_col = (
+                    normalized.get("company name")
+                    or normalized.get("company")
+                    or normalized.get("name")
                 )
+                if not symbol_col:
+                    raise ValueError(f"Symbol column not found. Columns: {df.columns.tolist()}")
 
-            cols = [symbol_col]
-            if company_col:
-                cols.append(company_col)
+                cols = [symbol_col] + ([company_col] if company_col else [])
+                result = df[cols].copy().rename(columns={symbol_col: "Symbol"})
+                result["Company"] = result[company_col] if company_col else result["Symbol"]
+                if company_col and company_col in result.columns:
+                    result = result.drop(columns=[company_col])
 
-            result = df[cols].copy()
-            result = result.rename(columns={symbol_col: "Symbol"})
+                result["Symbol"] = result["Symbol"].astype(str).str.strip().str.upper()
+                result["Company"] = result["Company"].astype(str).str.strip()
+                result = result.loc[result["Symbol"].notna() & result["Symbol"].ne("")]
+                result = result.drop_duplicates("Symbol").reset_index(drop=True)
+                if len(result) < 100:
+                    raise ValueError(f"Only {len(result)} valid constituents returned")
 
-            if company_col:
-                result = result.rename(columns={company_col: "Company"})
-            else:
-                result["Company"] = result["Symbol"]
-
-            result["Symbol"] = (
-                result["Symbol"]
-                .astype(str)
-                .str.strip()
-                .str.upper()
-            )
-            result["Company"] = (
-                result["Company"]
-                .astype(str)
-                .str.strip()
-            )
-
-            result = (
-                result
-                .dropna(subset=["Symbol"])
-                .drop_duplicates("Symbol")
-                .reset_index(drop=True)
-            )
-
-            if len(result) < 100:
-                raise ValueError(
-                    f"Only {len(result)} constituents returned."
-                )
-
-            result["Yahoo Symbol"] = result["Symbol"] + ".NS"
-            return result
-
-        except Exception as exc:
-            errors.append(f"{url}: {exc}")
+                result["Yahoo Symbol"] = result["Symbol"] + ".NS"
+                return result[["Symbol", "Company", "Yahoo Symbol"]]
+            except Exception as exc:
+                if attempt == 2:
+                    errors.append(f"{url}: {exc}")
+                else:
+                    time.sleep((0.75 * (2 ** attempt)) + random.uniform(0.0, 0.25))
 
     raise RuntimeError("NSE universe download failed: " + " | ".join(errors))
 
@@ -123,58 +110,88 @@ def load_universe(universe_name: str = "NIFTY TOTAL MARKET") -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
+    if len(result) < 650:
+        raise RuntimeError(
+            f"Total Market universe appears incomplete: only {len(result)} unique stocks."
+        )
     return result
 
 
 def _normalize_yfinance(data: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
+    """Normalize yfinance output while preserving adjusted and raw prices.
+
+    Technical indicators use adjusted OHLC. Liquidity uses RawClose * Volume so
+    historical split adjustments do not distort traded-value calculations.
+    """
     if data is None or data.empty:
         return pd.DataFrame()
 
     frames: list[pd.DataFrame] = []
 
-    if isinstance(data.columns, pd.MultiIndex):
-        for ticker in tickers:
-            if ticker not in data.columns.get_level_values(0):
-                continue
+    def _extract_ticker_frame(source: pd.DataFrame, ticker: str) -> pd.DataFrame:
+        if not isinstance(source.columns, pd.MultiIndex):
+            return source.copy() if len(tickers) == 1 else pd.DataFrame()
 
-            frame = data[ticker].copy().dropna(how="all")
-            if frame.empty:
-                continue
+        level0 = source.columns.get_level_values(0)
+        level1 = source.columns.get_level_values(1)
+        if ticker in level0:
+            return source[ticker].copy()
+        if ticker in level1:
+            return source.xs(ticker, axis=1, level=1, drop_level=True).copy()
+        return pd.DataFrame()
 
-            required = {"Open", "High", "Low", "Close"}
-            if not required.issubset(frame.columns):
-                continue
+    for ticker in tickers:
+        frame = _extract_ticker_frame(data, ticker).dropna(how="all")
+        if frame.empty:
+            continue
 
-            frame = frame.reset_index()
-            frame["Yahoo Symbol"] = ticker
-            frames.append(frame)
-    else:
-        if len(tickers) == 1:
-            frame = data.copy().dropna(how="all")
-            if not frame.empty:
-                frame = frame.reset_index()
-                frame["Yahoo Symbol"] = tickers[0]
-                frames.append(frame)
+        # auto_adjust=False gives both raw Close and Adj Close. Build an
+        # adjusted OHLC series explicitly and retain RawClose for liquidity.
+        required = {"Open", "High", "Low", "Close"}
+        if not required.issubset(frame.columns):
+            continue
+
+        frame["RawClose"] = pd.to_numeric(frame["Close"], errors="coerce")
+        if "Adj Close" in frame.columns:
+            adj = pd.to_numeric(frame["Adj Close"], errors="coerce")
+            raw = frame["RawClose"].replace(0, pd.NA)
+            adjustment = (adj / raw).replace([float("inf"), float("-inf")], pd.NA)
+            # Only adjust rows where Yahoo supplied a valid adjustment factor.
+            for col in ["Open", "High", "Low", "Close"]:
+                frame[col] = pd.to_numeric(frame[col], errors="coerce") * adjustment.fillna(1.0)
+        else:
+            for col in ["Open", "High", "Low", "Close"]:
+                frame[col] = pd.to_numeric(frame[col], errors="coerce")
+
+        frame = frame.reset_index()
+        date_col = "Date" if "Date" in frame.columns else frame.columns[0]
+        if date_col != "Date":
+            frame = frame.rename(columns={date_col: "Date"})
+        frame["Yahoo Symbol"] = ticker
+        frames.append(frame)
 
     if not frames:
         return pd.DataFrame()
 
     out = pd.concat(frames, ignore_index=True)
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce", utc=True).dt.tz_convert(None).dt.normalize()
 
-    out["Date"] = pd.to_datetime(
-        out["Date"],
-        errors="coerce",
-        utc=True,
-    ).dt.tz_convert(None).dt.normalize()
+    for col in ["Open", "High", "Low", "Close", "RawClose", "Volume"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
 
-    for c in ["Open", "High", "Low", "Close", "Volume"]:
-        if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
+    # Reject impossible or incomplete rows instead of allowing bad data into
+    # every downstream indicator.
+    valid = (
+        out[["Open", "High", "Low", "Close"]].gt(0).all(axis=1)
+        & (out["High"] >= out[["Open", "Close", "Low"]].max(axis=1))
+        & (out["Low"] <= out[["Open", "Close", "High"]].min(axis=1))
+    )
 
     return (
-        out
+        out.loc[valid]
         .dropna(subset=["Date", "High", "Low", "Close"])
-        .drop_duplicates(["Date", "Yahoo Symbol"])
+        .drop_duplicates(["Date", "Yahoo Symbol"], keep="last")
         .sort_values(["Yahoo Symbol", "Date"])
         .reset_index(drop=True)
     )
@@ -186,10 +203,15 @@ def download_price_batch(
     start_date: str,
     end_date: str,
 ) -> pd.DataFrame:
-    symbols = list(tickers)
+    """Download one batch with bounded retries and normalized output."""
+    symbols = list(dict.fromkeys(tickers))
+    if not symbols:
+        return pd.DataFrame()
 
     for attempt in range(3):
         try:
+            # Keep auto_adjust=False so RawClose and Adj Close are both
+            # available. _normalize_yfinance creates adjusted OHLC explicitly.
             data = yf.download(
                 tickers=symbols,
                 start=start_date,
@@ -201,17 +223,16 @@ def download_price_batch(
                 progress=False,
                 timeout=30,
             )
-
             normalized = _normalize_yfinance(data, symbols)
             if not normalized.empty:
                 return normalized
         except Exception:
+            # Batch failure is handled by the caller's bounded fallback path.
             pass
 
-        time.sleep(1.0 + attempt * 1.5)
+        time.sleep((1.0 * (2 ** attempt)) + random.uniform(0.0, 0.5))
 
     return pd.DataFrame()
-
 
 def download_prices(
     universe: pd.DataFrame,
@@ -279,6 +300,13 @@ def download_prices(
         .sort_values(["Yahoo Symbol", "Date"])
         .reset_index(drop=True)
     )
+
+    # A symbol with only a handful of rows is not a valid substitute for a
+    # complete download. Keep it in failures so the scan can report coverage.
+    row_counts = prices.groupby("Yahoo Symbol")["Date"].nunique()
+    min_required = min(260, max(60, int(years * 252 * 0.5)))
+    short_history = row_counts[row_counts < min_required].index.tolist()
+    failures.extend(short_history)
 
     return prices, sorted(set(failures))
 
@@ -373,7 +401,8 @@ def calculate_indicators(
         # Volume and liquidity context.
         frame["VolumeSMA20"] = volume.rolling(20, min_periods=20).mean()
         frame["VolumeRatio"] = _safe_ratio(volume, frame["VolumeSMA20"])
-        frame["TradedValue"] = close * volume
+        raw_close = pd.to_numeric(frame.get("RawClose", close), errors="coerce")
+        frame["TradedValue"] = raw_close * volume
         frame["AvgTradedValue20"] = frame["TradedValue"].rolling(20, min_periods=20).mean()
 
         # Cross states. Yesterday vs today only.
@@ -449,9 +478,18 @@ def latest_snapshot(
     ] + [f"Return{label}" for label in RS_PERIODS]
 
     for ticker, frame in indicators.groupby("Yahoo Symbol", sort=False):
-        row = frame.sort_values("Date").iloc[-1]
+        ordered = frame.sort_values("Date")
+        row = ordered.iloc[-1]
         company = meta.get(ticker, {"Symbol": ticker.replace(".NS", ""), "Company": ""})
-        item = {"Symbol": company["Symbol"], "Company": company["Company"], "Yahoo Symbol": ticker, "Date": row["Date"]}
+        bars = len(ordered)
+        item = {
+            "Symbol": company["Symbol"],
+            "Company": company["Company"],
+            "Yahoo Symbol": ticker,
+            "Date": row["Date"],
+            "Bars": bars,
+            "HistoryEligible": bars >= max(ema_long, max(RS_PERIODS.values())) + 1,
+        }
         for col in latest_columns:
             item[col] = row.get(col, pd.NA)
         rows.append(item)
@@ -464,13 +502,20 @@ def latest_snapshot(
     for col in bool_cols:
         snapshot[col] = snapshot[col].fillna(False).astype(bool)
 
-    # Cross-sectional relative strength percentiles. 100 means strongest in the scan.
-    for label in RS_PERIODS:
+    # Cross-sectional relative strength percentiles. Rank only observations
+    # with sufficient history for that horizon, so missing data is not treated
+    # as weak performance.
+    for label, periods in RS_PERIODS.items():
         ret_col = f"Return{label}"
-        snapshot[f"RS{label}Pct"] = snapshot[ret_col].rank(pct=True, method="average") * 100
+        eligible = snapshot["Bars"] >= periods + 1
+        snapshot[f"RS{label}Pct"] = pd.NA
+        snapshot.loc[eligible, f"RS{label}Pct"] = (
+            snapshot.loc[eligible, ret_col].rank(pct=True, method="average") * 100
+        )
 
     snapshot["LiquidityBucket"] = snapshot["AvgTradedValue20"].apply(_liquidity_bucket)
-    snapshot["LiquidityEligible"] = snapshot["AvgTradedValue20"] >= LIQUIDITY_THRESHOLD
+    snapshot["LiquidityEligible"] = snapshot["AvgTradedValue20"].fillna(0) >= LIQUIDITY_THRESHOLD
+    snapshot["DataQualityStatus"] = snapshot["HistoryEligible"].map({True: "OK", False: "Insufficient history"})
     return snapshot
 
 
