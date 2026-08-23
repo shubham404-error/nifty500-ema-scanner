@@ -13,7 +13,6 @@ from engine import (
     calculate_indicators,
     convergence_table,
     fundamental_snapshot,
-    investor_quality_gate,
     latest_snapshot,
     load_universe,
     download_prices,
@@ -85,8 +84,45 @@ html, body {
     font-family: Helvetica, Arial, sans-serif;
 }
 
+
+.guide-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin: 8px 0 4px;
+}
+.guide-card {
+    background: var(--panel-soft);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 12px 14px;
+}
+.guide-card b {
+    color: var(--text);
+    font-size: 13px;
+}
+.guide-card p {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 5px 0 0;
+}
+@media (max-width: 700px) {
+    .guide-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* Never override Streamlit / Material Symbols fonts.
    Otherwise icon ligatures render as literal text such as keyboard_double_arrow. */
+/* Hide only Streamlit's viewer/GitHub badge.
+   Keep the header and MainMenu intact. */
+.styles_viewerBadge__1yB5_,
+.viewerBadge_link__1S137,
+[data-testid="stViewerBadge"] {
+    display: none !important;
+}
+
 .material-symbols-rounded,
 .material-symbols-outlined,
 [class*="material-symbols"],
@@ -753,11 +789,11 @@ def strategy_page(strategy: str):
     if search:
         table=table.loc[table["Symbol"].str.contains(search,case=False,na=False)|table["Company"].str.contains(search,case=False,na=False)]
     st.dataframe(table,use_container_width=True,hide_index=True,height=520,column_config={
-        "RS3MPct":st.column_config.NumberColumn("RS 3M %ile",format="%.0f"),
-        "RS6MPct":st.column_config.NumberColumn("RS 6M %ile",format="%.0f"),
-        "VolumeRatio":st.column_config.NumberColumn("Volume x",format="%.2f"),
+        "RS3MPct":st.column_config.NumberColumn("3M Relative Strength",format="%.0f"),
+        "RS6MPct":st.column_config.NumberColumn("6M Relative Strength",format="%.0f"),
+        "VolumeRatio":st.column_config.NumberColumn("Volume vs Normal",format="%.2f"),
         "AvgTradedValue20":st.column_config.NumberColumn("20D Traded Value",format="₹ %.0f"),
-        "ATRPercent":st.column_config.NumberColumn("ATR %",format="%.2f%%"),
+        "ATRPercent":st.column_config.NumberColumn("Volatility (ATR %)",format="%.2f%%"),
     })
 
     st.markdown('<div class="section-kicker">Chart console</div>',unsafe_allow_html=True)
@@ -777,6 +813,9 @@ def strategy_page(strategy: str):
 
 
 def convergence_page():
+
+    indicator_guide()
+    explain_table_columns("confluence")
     require_scan()
     df=st.session_state["convergence"].copy()
     terminal_header("Confluence","Setup-aware ranking. Trend, pullback, fresh momentum and breakout paths are evaluated separately.")
@@ -807,330 +846,157 @@ def convergence_page():
 
 
 def buying_list_page():
+
+    indicator_guide()
+    explain_table_columns("final")
     require_scan()
-
-    df = st.session_state["convergence"].copy()
-
-    terminal_header(
-        "Final Buy List",
-        "Strict retail-investor quality filter applied after Confluence. "
-        "This is a research shortlist, not an automated buy recommendation.",
-    )
-
-    guide(
-        "How this list is different",
-        "Confluence finds valid technical setups. This page is deliberately stricter. "
-        "It keeps only candidates with strong relative strength, setup-specific confirmation, "
-        "controlled risk and usable liquidity.",
-        [
-            "Start with the strict technical quality gate.",
-            "Keep the recommended liquidity filter on for practical retail execution.",
-            "Fundamentals are fetched only for the strongest technical finalists.",
-            "Use the final list for research and chart review, not blind execution.",
-        ],
-    )
-
-    min_score = st.slider(
-        "Minimum Investor Conviction Score",
-        65,
-        95,
-        78,
-        1,
-        key="buy_conviction_score",
-    )
-
-    use_liquidity = st.toggle(
-        "Use liquidity filter (recommended)",
-        value=True,
-        key="buy_liquidity_filter",
-        help="Optional. Uses the existing 20-day average traded-value threshold.",
-    )
-
-    technical = investor_quality_gate(df)
-
-    if use_liquidity and not technical.empty:
-        technical = technical.loc[
-            technical["LiquidityEligible"].fillna(False)
-        ].copy()
-
-    if technical.empty:
-        st.info(
-            "No candidates currently pass the strict investor-quality gate. "
-            "That is acceptable. The model does not force a shortlist."
-        )
-        return
-
-    # Infrastructure cap only. This is NOT a cap on the number of final picks.
-    # Fundamentals are the expensive/public-data step and are fetched only for
-    # the strongest technical candidates to protect Streamlit Cloud limits.
-    fundamental_fetch_limit = 25
-    finalists_for_fundamentals = technical.head(
-        fundamental_fetch_limit
-    ).copy()
-
-    rows = []
-    with st.spinner(
-        f"Fetching fundamentals for {len(finalists_for_fundamentals)} technical finalists..."
-    ):
-        for _, row in finalists_for_fundamentals.iterrows():
-            fund = fundamental_snapshot(row["Yahoo Symbol"])
-
-            fundamental_score = 0.0
-
-            market_cap = pd.to_numeric(
-                fund.get("Market Cap"),
-                errors="coerce",
-            )
-            revenue_growth = pd.to_numeric(
-                fund.get("Revenue Growth %"),
-                errors="coerce",
-            )
-            margin = pd.to_numeric(
-                fund.get("Profit Margin %"),
-                errors="coerce",
-            )
-            debt_equity = pd.to_numeric(
-                fund.get("Debt/Equity"),
-                errors="coerce",
-            )
-            pe = pd.to_numeric(
-                fund.get("PE"),
-                errors="coerce",
-            )
-
-            # Missing public fundamentals are neutral, not an automatic fail.
-            fundamental_score += (
-                2 if pd.notna(market_cap) and market_cap >= 5_00_00_00_000 else 0
-            )
-            fundamental_score += (
-                2 if pd.notna(revenue_growth) and revenue_growth > 0 else 0
-            )
-            fundamental_score += (
-                2 if pd.notna(margin) and margin > 0 else 0
-            )
-            fundamental_score += (
-                2 if pd.notna(debt_equity) and 0 <= debt_equity <= 2.5 else 0
-            )
-            fundamental_score += (
-                2 if pd.notna(pe) and 0 < pe <= 60 else 0
-            )
-
-            investor_conviction = (
-                float(row["InvestorTechnicalScore"]) * 0.90
-                + fundamental_score
-            )
-
-            rows.append(
-                {
-                    "Symbol": row["Symbol"],
-                    "Company": row["Company"],
-                    "Setup": row["Setup"],
-                    "Investor Conviction": round(investor_conviction, 1),
-                    "Technical Quality": round(
-                        float(row["InvestorTechnicalScore"]), 1
-                    ),
-                    "Confluence": int(row["ConvergenceScore"]),
-                    "RS 3M %ile": (
-                        round(float(row["RS3MPct"]), 1)
-                        if pd.notna(row["RS3MPct"])
-                        else None
-                    ),
-                    "RS 6M %ile": (
-                        round(float(row["RS6MPct"]), 1)
-                        if pd.notna(row["RS6MPct"])
-                        else None
-                    ),
-                    "Volume x": (
-                        round(float(row["VolumeRatio"]), 2)
-                        if pd.notna(row["VolumeRatio"])
-                        else None
-                    ),
-                    "Liquidity": row["LiquidityBucket"],
-                    "RSI": (
-                        round(float(row["RSI14"]), 2)
-                        if pd.notna(row["RSI14"])
-                        else None
-                    ),
-                    "ATR %": (
-                        round(float(row["ATRPercent"]), 2)
-                        if pd.notna(row["ATRPercent"])
-                        else None
-                    ),
-                    "Gap %": (
-                        round(float(row["GapPct"]), 2)
-                        if pd.notna(row["GapPct"])
-                        else None
-                    ),
-                    "P/E": fund["PE"],
-                    "Revenue Growth %": fund["Revenue Growth %"],
-                    "Net Profit Margin %": fund["Profit Margin %"],
-                    "Debt/Equity": fund["Debt/Equity"],
-                    "EV/EBITDA": fund["EV/EBITDA"],
-                    "Market Cap": fund["Market Cap"],
-                    "Yahoo Symbol": row["Yahoo Symbol"],
-                }
-            )
-
-    final = pd.DataFrame(rows)
-
-    if final.empty:
-        st.info("No candidates were enriched successfully.")
-        return
-
-    final["Investor Conviction"] = pd.to_numeric(
-        final["Investor Conviction"],
-        errors="coerce",
-    )
-    final["Technical Quality"] = pd.to_numeric(
-        final["Technical Quality"],
-        errors="coerce",
-    )
-
-    # Score threshold, not stock count, determines the final list.
-    final = (
-        final.loc[
-            final["Investor Conviction"] >= min_score
-        ]
-        .sort_values(
-            ["Investor Conviction", "Technical Quality", "RS 3M %ile"],
-            ascending=False,
-            na_position="last",
-        )
-        .reset_index(drop=True)
-    )
-
-    if final.empty:
-        st.info(
-            "No technically and fundamentally strong candidates cleared "
-            f"the Investor Conviction threshold of {min_score:.0f}."
-        )
-        return
-
-    final.insert(0, "Rank", range(1, len(final) + 1))
-
-    for col in [
-        "P/E",
-        "Revenue Growth %",
-        "Net Profit Margin %",
-        "Debt/Equity",
-        "EV/EBITDA",
-    ]:
-        final[col] = pd.to_numeric(
-            final[col],
-            errors="coerce",
-        ).round(2)
-
-    st.metric(
-        "FINAL RESEARCH CANDIDATES",
-        f"{len(final):,}",
-    )
-
-    if len(technical) > fundamental_fetch_limit:
-        st.caption(
-            f"{len(technical)} technical candidates passed the quality gate. "
-            f"Fundamentals were fetched only for the top {fundamental_fetch_limit} "
-            "technical finalists to limit public-data requests."
-        )
-
-    display_cols = [
-        "Rank",
-        "Symbol",
-        "Company",
-        "Setup",
-        "Investor Conviction",
-        "Technical Quality",
-        "Confluence",
-        "RS 3M %ile",
-        "RS 6M %ile",
-        "Volume x",
-        "Liquidity",
-        "RSI",
-        "ATR %",
-        "P/E",
-        "Revenue Growth %",
-        "Net Profit Margin %",
-        "Debt/Equity",
-        "EV/EBITDA",
-        "Market Cap",
-    ]
-
-    display_cols = [
-        col for col in display_cols
-        if col in final.columns
-    ]
-
-    st.dataframe(
-        final[display_cols],
-        use_container_width=True,
-        hide_index=True,
-        height=560,
-    )
-
-    export = final.drop(
-        columns=["Yahoo Symbol"],
-        errors="ignore",
-    )
-
-    st.download_button(
-        "EXPORT FINAL BUY LIST",
-        data=export.to_csv(index=False).encode(),
-        file_name="nifty_total_market_buying_list.csv",
-        mime="text/csv",
-    )
-
-    st.divider()
-
-    if st.toggle(
-        "SHOW CHART FOR BUY LIST STOCK",
+    df=st.session_state["convergence"].copy()
+    terminal_header("Final Buy List","Liquid, high-quality research candidates. This is a shortlist, not an automated buy recommendation.")
+    min_score=st.slider("Minimum shortlist score",60,100,70,5,key="buy_min_score")
+    use_liquidity=st.toggle(
+        "Require liquidity filter",
         value=False,
-        key="buy_chart_toggle",
+        key="buy_liquidity_filter",
+        help="Optional. When enabled, only stocks meeting the app's 20-day traded-value threshold are included."
+    )
+    shortlist=df.loc[
+        (df["Setup"]!="No active setup")
+        & (df["ConvergenceScore"]>=min_score)
+    ].copy()
+    if use_liquidity:
+        shortlist=shortlist.loc[shortlist["LiquidityEligible"].fillna(False)].copy()
+    shortlist=shortlist.sort_values(
+        ["ConvergenceScore","RS3MPct","AvgTradedValue20"],
+        ascending=False,
+        na_position="last"
+    )
+    if shortlist.empty:
+        st.info("No stocks currently meet the shortlist rules.")
+        return
+    rows=[]
+    with st.spinner(f"Fetching fundamentals for {len(shortlist)} finalists..."):
+        for _,row in shortlist.iterrows():
+            fund=fundamental_snapshot(row["Yahoo Symbol"])
+            rows.append({
+                "Symbol":row["Symbol"],"Company":row["Company"],"Setup":row["Setup"],
+                "Score":int(row["ConvergenceScore"]),"RS 3M %ile":round(float(row["RS3MPct"]),1) if pd.notna(row["RS3MPct"]) else None,
+                "Volume x":round(float(row["VolumeRatio"]),2) if pd.notna(row["VolumeRatio"]) else None,
+                "Liquidity":row["LiquidityBucket"],"RSI":round(float(row["RSI14"]),2) if pd.notna(row["RSI14"]) else None,
+                "EMA255 Dist %":round(float(row["EMA255DistancePct"]),2) if pd.notna(row["EMA255DistancePct"]) else None,
+                "ATR %":round(float(row["ATRPercent"]),2) if pd.notna(row["ATRPercent"]) else None,
+                "Gap %":round(float(row["GapPct"]),2) if pd.notna(row["GapPct"]) else None,
+                "P/E":fund["PE"],"Revenue Growth %":fund["Revenue Growth %"],"Net Profit Margin %":fund["Profit Margin %"],
+                "Debt/Equity":fund["Debt/Equity"],"EV/EBITDA":fund["EV/EBITDA"],"Market Cap":fund["Market Cap"],"Yahoo Symbol":row["Yahoo Symbol"],
+            })
+    final=pd.DataFrame(rows)
+    for col in ["P/E","Revenue Growth %","Net Profit Margin %","Debt/Equity","EV/EBITDA"]:
+        final[col]=pd.to_numeric(final[col],errors="coerce").round(2)
+    final.insert(0,"Rank",range(1,len(final)+1))
+    st.metric("FINAL RESEARCH CANDIDATES",f"{len(final):,}")
+    st.dataframe(final.drop(columns=["Yahoo Symbol"]),use_container_width=True,hide_index=True,height=560)
+    st.download_button("EXPORT FINAL BUY LIST",data=final.drop(columns=["Yahoo Symbol"]).to_csv(index=False).encode(),file_name="nifty_total_market_buying_list.csv",mime="text/csv")
+    st.divider()
+    if st.toggle("SHOW CHART FOR BUY LIST STOCK",value=False,key="buy_chart_toggle"):
+        selected=st.selectbox("Stock",final["Symbol"].tolist(),key="buy_chart_stock")
+        row=final.loc[final["Symbol"]==selected].iloc[0]
+        frame=st.session_state["indicators"].loc[st.session_state["indicators"]["Yahoo Symbol"]==row["Yahoo Symbol"]].copy()
+        st.plotly_chart(market_chart(frame,selected,["EMA9","EMA21","SMA20","SMA50","SMA200","EMA255"],rsi_col="RSI14",days=252,cross_columns=["Cross9_21","Cross20_50","Cross50_200"],rsi_lines=[(30,"RSI 30"),(35,"BUY ZONE 35"),(50,"RSI 50"),(70,"RSI 70")]),use_container_width=True,config={"displaylogo":False,"scrollZoom":True})
+
+
+# -------------------------------------------------------------------
+# Beginner indicator guide. UI-only. No scan logic changes.
+# -------------------------------------------------------------------
+def indicator_guide():
+    with st.expander("LEARN THE INDICATORS", expanded=False):
+        st.markdown(
+            """
+            <div class="guide-grid">
+              <div class="guide-card">
+                <b>9 / 21 EMA</b>
+                <p>Short-term momentum. When the faster 9 EMA crosses above
+                the 21 EMA, recent buying momentum is strengthening.</p>
+              </div>
+              <div class="guide-card">
+                <b>20 / 50 SMA</b>
+                <p>Medium-term trend. It helps show whether the swing trend
+                is moving in the same direction as the broader trend.</p>
+              </div>
+              <div class="guide-card">
+                <b>50 / 200 SMA</b>
+                <p>Long-term market structure. A 50 SMA above the 200 SMA
+                indicates a bullish long-term trend.</p>
+              </div>
+              <div class="guide-card">
+                <b>EMA 255</b>
+                <p>A long-term trend reference. The Pullback strategy looks
+                for weakness near this level inside a bullish structure.</p>
+              </div>
+              <div class="guide-card">
+                <b>RSI 14</b>
+                <p>Momentum and exhaustion. Below 35 is a weak/oversold zone.
+                Above 70 can indicate a stretched move. RSI alone is not a buy signal.</p>
+              </div>
+              <div class="guide-card">
+                <b>Volume vs Normal</b>
+                <p>Shows current participation relative to normal trading.
+                1.5x means roughly 50% more volume than the reference average.</p>
+              </div>
+              <div class="guide-card">
+                <b>3M / 6M Relative Strength</b>
+                <p>Percentile rank versus the stocks in the scanned universe.
+                90 means the stock has been stronger than roughly 90% of peers.</p>
+              </div>
+              <div class="guide-card">
+                <b>Volatility (ATR %)</b>
+                <p>Average True Range expressed as a percentage of price.
+                It tells you how much the stock typically moves and helps you judge risk.</p>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Important: indicators are evidence, not guarantees. "
+            "Use the chart and fundamentals to validate a candidate before investing."
+        )
+
+
+def explain_table_columns(table_type="confluence"):
+    with st.expander(
+        "WHAT DO THESE COLUMNS MEAN?",
+        expanded=False,
     ):
-        selected = st.selectbox(
-            "Stock",
-            final["Symbol"].tolist(),
-            key="buy_chart_stock",
-        )
-        row = final.loc[
-            final["Symbol"] == selected
-        ].iloc[0]
+        if table_type == "confluence":
+            st.markdown(
+                """
+                **Setup** tells you *why* the stock qualified.  
+                **Confluence Score** measures the strength of that detected setup.  
+                **RS 3M / RS 6M** show relative strength versus the scanned universe.  
+                **Volume** shows participation versus normal.  
+                **RSI** shows current momentum/exhaustion.  
+                **EMA255 Dist.** shows how far price is from the long-term reference.  
+                **Volatility (ATR %)** shows typical daily movement.  
+                """
+            )
+        else:
+            st.markdown(
+                """
+                **Investor Conviction** ranks candidates after the stricter investor-quality checks.  
+                **Technical Quality** measures the underlying technical setup.  
+                **Confluence** is the original setup score.  
+                **Fundamentals** provide a business/valuation sanity check, not a rescue mechanism for a weak setup.  
+                **Volatility (ATR %)** helps you understand how aggressively the stock can move.  
+                """
+            )
 
-        frame = st.session_state["indicators"].loc[
-            st.session_state["indicators"]["Yahoo Symbol"]
-            == row["Yahoo Symbol"]
-        ].copy()
+# -------------------------------------------------------------------
+# Navigation# -------------------------------------------------------------------
+# Navigation
+# -------------------------------------------------------------------
 
-        st.plotly_chart(
-            market_chart(
-                frame,
-                selected,
-                [
-                    "EMA9",
-                    "EMA21",
-                    "SMA20",
-                    "SMA50",
-                    "SMA200",
-                    "EMA255",
-                ],
-                rsi_col="RSI14",
-                days=252,
-                cross_columns=[
-                    "Cross9_21",
-                    "Cross20_50",
-                    "Cross50_200",
-                ],
-                rsi_lines=[
-                    (30, "RSI 30"),
-                    (35, "BUY ZONE 35"),
-                    (50, "RSI 50"),
-                    (70, "RSI 70"),
-                ],
-            ),
-            use_container_width=True,
-            config={
-                "displaylogo": False,
-                "scrollZoom": True,
-            },
-        )
+# Named wrapper functions are used instead of lambdas so every page has
+# a unique callable name and explicit URL path. This avoids duplicate
+# page-path errors in Streamlit navigation.
 
 def regime_page():
     strategy_page("regime")
