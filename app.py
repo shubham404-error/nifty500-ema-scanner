@@ -58,8 +58,13 @@ html, body, [class*="css"] {
 
 .block-container {
     max-width: 1440px;
-    padding-top: 1.2rem;
+    padding-top: 4.8rem !important;
     padding-bottom: 3rem;
+}
+
+[data-testid="stTopNav"] {
+    z-index: 1000;
+    min-height: 52px;
 }
 
 [data-testid="stSidebar"] {
@@ -76,7 +81,7 @@ html, body, [class*="css"] {
     border: 1px solid var(--border);
     border-left: 4px solid var(--accent);
     padding: 16px 20px;
-    margin-bottom: 12px;
+    margin: 0 0 18px 0;
     border-radius: 7px;
 }
 
@@ -235,6 +240,24 @@ div[data-testid="stDataFrame"] {
 hr {
     border-color: var(--border);
 }
+
+.product-pill {
+    display: inline-block;
+    padding: 4px 9px;
+    border-radius: 999px;
+    border: 1px solid #3a4653;
+    background: #111821;
+    color: #cbd5e1;
+    font-size: 10px;
+    letter-spacing: .7px;
+    text-transform: uppercase;
+    margin-right: 5px;
+}
+.product-pill.accent {
+    color: #f0a51a;
+    border-color: #735919;
+}
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -479,15 +502,15 @@ def home_page():
     )
 
     page_intro(
-        "Find better research candidates, faster.",
+        "Find the signal. Check the context. Do your homework.",
         "Start with one market scan, explore a setup that matches your style, "
         "inspect the chart, and then move to the shortlist. You do not need to "
         "understand every indicator to use the app.",
     )
 
     guide(
-        "Start here",
-        "The app follows a simple research flow. You can stop at any stage.",
+        "Start here. Let's scan.",
+        "The workflow is simple. The analysis underneath it is not.",
         [
             "Scan the market once. The result is reused across the app.",
             "Open Market Health, Momentum, Swing, or Pullback.",
@@ -518,19 +541,19 @@ def home_page():
     sections = [
         (
             "Market Health",
-            "Checks the long-term environment. Useful as context before looking for individual trades.",
+            "The big-picture filter. Tells you whether the long-term trend is helping or fighting you.",
         ),
         (
             "Momentum",
-            "Looks for a recent change in short-term direction using the 9 and 21 EMA.",
+            "Fast money, fast signals. Spots fresh short-term momentum using the 9/21 EMA.",
         ),
         (
             "Swing",
-            "Looks for medium-term trend alignment using the 20 and 50-day averages.",
+            "The calmer setup. Looks for multi-week trend alignment using the 20/50 averages.",
         ),
         (
             "Pullback",
-            "Finds potentially oversold stocks close to the long-term EMA 255.",
+            "Hunting the pullback. Finds oversold names sitting close to their long-term EMA 255.",
         ),
     ]
 
@@ -555,7 +578,7 @@ def home_page():
 
 def scan_page():
     terminal_header(
-        "Scan Market",
+        "Scan Engine",
         "Run one shared scan and reuse it everywhere else",
     )
 
@@ -567,7 +590,7 @@ def scan_page():
     )
 
     guide(
-        "Recommended settings",
+        "Recommended setup",
         "For normal use, keep the defaults. A 4-year history gives enough context "
         "for the long moving averages while keeping the scan practical on free hosting.",
         [
@@ -700,7 +723,7 @@ def scan_page():
         )
 
         guide(
-            "Next step",
+            "You're ready",
             "Use the top menu to explore a strategy. The strategy pages reuse this exact scan."
         )
 
@@ -1213,35 +1236,35 @@ pages = {
     "Scan": [
         st.Page(
             scan_page,
-            title="Scan Market",
+            title="Scan Engine",
             icon="🔄",
-            url_path="scan-market",
+            url_path="scan-engine",
         ),
     ],
     "Explore": [
         st.Page(
             regime_page,
-            title="Market Health",
+            title="Market Regime",
             icon="📐",
-            url_path="market-health",
+            url_path="market-regime",
         ),
         st.Page(
             momentum_page,
-            title="Momentum",
+            title="9/21 Momentum",
             icon="📈",
-            url_path="momentum",
+            url_path="momentum-9-21",
         ),
         st.Page(
             swing_page,
-            title="Swing",
+            title="20/50 Swing",
             icon="📊",
-            url_path="swing",
+            url_path="swing-20-50",
         ),
         st.Page(
             pullback_page,
-            title="Pullback",
+            title="EMA 255 Pullback",
             icon="↔️",
-            url_path="pullback",
+            url_path="ema-255-pullback",
         ),
     ],
     "Decide": [
@@ -1253,9 +1276,9 @@ pages = {
         ),
         st.Page(
             buying_list_page,
-            title="Shortlist",
+            title="Final Buy List",
             icon="⭐",
-            url_path="shortlist",
+            url_path="final-buy-list",
         ),
     ],
 }
@@ -1270,11 +1293,11 @@ with st.sidebar:
         """
 <div class="section-kicker">Quick start</div>
 <div class="small-note">
-<b>1.</b> Scan Market<br>
+<b>1.</b> Run Scan Engine<br>
 <b>2.</b> Explore a setup<br>
 <b>3.</b> Check the chart<br>
 <b>4.</b> Open Confluence<br>
-<b>5.</b> Review Shortlist
+<b>5.</b> Open Final Buy List
 </div>
 """,
         unsafe_allow_html=True,
