@@ -1,1438 +1,1033 @@
-import io
-import time
-from datetime import date, timedelta
+
+from __future__ import annotations
+
+from datetime import datetime
 
 import pandas as pd
-import plotly.graph_objects as go
-import requests
 import streamlit as st
-import yfinance as yf
-from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+
+from engine import (
+    add_days_since_cross,
+    calculate_indicators,
+    convergence_table,
+    fundamental_snapshot,
+    latest_snapshot,
+    load_universe,
+    download_prices,
+)
 
 
 st.set_page_config(
-    page_title="Nifty 500 EMA Scanner",
-    page_icon="📈",
+    page_title="Nifty Market Terminal",
+    page_icon="▦",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-NIFTY500_URLS = [
-    "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
-    "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
-]
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
-)
-
-
-@st.cache_data(ttl=21600, show_spinner=False)
-def get_nifty500_constituents():
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "text/csv,text/plain,*/*",
-    }
-    errors = []
-
-    for url in NIFTY500_URLS:
-        try:
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            df = pd.read_csv(io.StringIO(response.text))
-
-            columns = {
-                str(column).strip().lower(): column
-                for column in df.columns
-            }
-
-            symbol_col = columns.get("symbol")
-            company_col = (
-                columns.get("company name")
-                or columns.get("company")
-                or columns.get("name")
-            )
-
-            if symbol_col is None or company_col is None:
-                raise ValueError(
-                    f"Unexpected columns: {df.columns.tolist()}"
-                )
-
-            result = (
-                df[[symbol_col, company_col]]
-                .rename(
-                    columns={
-                        symbol_col: "Symbol",
-                        company_col: "Company",
-                    }
-                )
-                .dropna()
-                .assign(
-                    Symbol=lambda x: x["Symbol"]
-                    .astype(str)
-                    .str.strip()
-                )
-                .drop_duplicates(subset=["Symbol"])
-                .sort_values("Symbol")
-                .reset_index(drop=True)
-            )
-
-            if len(result) < 400:
-                raise ValueError(
-                    f"Only {len(result)} constituents returned."
-                )
-
-            result["Yahoo Symbol"] = result["Symbol"] + ".NS"
-            return result
-
-        except Exception as exc:
-            errors.append(f"{url}: {exc}")
-
-    raise RuntimeError(
-        "Unable to download Nifty 500 constituents.\n"
-        + "\n".join(errors)
-    )
-
-
-def normalize_download(data, tickers):
-    frames = []
-
-    if data is None or data.empty:
-        return pd.DataFrame()
-
-    if isinstance(data.columns, pd.MultiIndex):
-        for ticker in tickers:
-            try:
-                frame = data[ticker].copy()
-            except (KeyError, TypeError):
-                continue
-
-            frame = frame.dropna(how="all")
-
-            if (
-                not frame.empty
-                and {"Close", "High", "Low"}.issubset(frame.columns)
-            ):
-                frame = frame.reset_index()
-                frame["Yahoo Symbol"] = ticker
-                frames.append(frame)
-
-    elif len(tickers) == 1:
-        frame = data.dropna(how="all").copy()
-
-        if (
-            not frame.empty
-            and {"Close", "High", "Low"}.issubset(frame.columns)
-        ):
-            frame = frame.reset_index()
-            frame["Yahoo Symbol"] = tickers[0]
-            frames.append(frame)
-
-    if not frames:
-        return pd.DataFrame()
-
-    result = pd.concat(frames, ignore_index=True)
-
-    result["Date"] = pd.to_datetime(
-        result["Date"],
-        errors="coerce",
-        utc=True,
-    ).dt.tz_convert(None).dt.normalize()
-
-    for column in ["Open", "High", "Low", "Close", "Volume"]:
-        if column in result.columns:
-            result[column] = pd.to_numeric(
-                result[column],
-                errors="coerce",
-            )
-
-    return result.dropna(
-        subset=["Date", "High", "Low", "Close"]
-    ).reset_index(drop=True)
-
-
-@st.cache_data(ttl=14400, show_spinner=False)
-def download_price_batch(tickers_tuple, start_date, end_date):
-    tickers = list(tickers_tuple)
-
-    for attempt in range(3):
-        try:
-            data = yf.download(
-                tickers=tickers,
-                start=start_date,
-                end=end_date,
-                interval="1d",
-                auto_adjust=False,
-                group_by="ticker",
-                threads=True,
-                progress=False,
-                timeout=30,
-            )
-
-            result = normalize_download(data, tickers)
-
-            if not result.empty:
-                return result
-
-        except Exception:
-            pass
-
-        time.sleep(1.5 * (attempt + 1))
-
-    return pd.DataFrame()
-
-
-def download_all_prices(
-    tickers,
-    start_date,
-    end_date,
-    batch_size,
-    progress_callback=None,
-):
-    all_frames = []
-    failures = []
-
-    total_batches = (
-        len(tickers) + batch_size - 1
-    ) // batch_size
-
-    for batch_number, start in enumerate(
-        range(0, len(tickers), batch_size),
-        start=1,
-    ):
-        batch = list(tickers[start:start + batch_size])
-
-        frame = download_price_batch(
-            tuple(batch),
-            start_date,
-            end_date,
-        )
-
-        if not frame.empty:
-            all_frames.append(frame)
-            returned = set(frame["Yahoo Symbol"].unique())
-            missing = [
-                ticker
-                for ticker in batch
-                if ticker not in returned
-            ]
-        else:
-            missing = batch
-
-        # Retry missing tickers individually.
-        for ticker in missing:
-            retry = download_price_batch(
-                (ticker,),
-                start_date,
-                end_date,
-            )
-
-            if not retry.empty:
-                all_frames.append(retry)
-            else:
-                failures.append(ticker)
-
-        if progress_callback:
-            progress_callback(
-                batch_number,
-                total_batches,
-                len(failures),
-            )
-
-        time.sleep(0.25)
-
-    if not all_frames:
-        return pd.DataFrame(), sorted(set(failures))
-
-    prices = (
-        pd.concat(all_frames, ignore_index=True)
-        .drop_duplicates(
-            subset=["Date", "Yahoo Symbol"],
-            keep="last",
-        )
-        .sort_values(["Yahoo Symbol", "Date"])
-        .reset_index(drop=True)
-    )
-
-    return prices, sorted(set(failures))
-
-
-
-def calculate_rsi(close, period=14):
-    """Calculate Wilder's RSI."""
-    delta = close.diff()
-    gains = delta.clip(lower=0)
-    losses = -delta.clip(upper=0)
-
-    avg_gain = gains.ewm(
-        alpha=1 / period,
-        adjust=False,
-        min_periods=period,
-    ).mean()
-
-    avg_loss = losses.ewm(
-        alpha=1 / period,
-        adjust=False,
-        min_periods=period,
-    ).mean()
-
-    rs = avg_gain / avg_loss.replace(0, 1e-12)
-    return 100 - (100 / (1 + rs))
-
-
-def get_latest_buy_candidates(
-    universe,
-    prices,
-    ema_period,
-    rsi_period,
-    rsi_threshold=35.0,
-    ema_distance_limit=2.0,
-):
-    """
-    Build a current buying list using the latest available trading day.
-
-    Conditions:
-    1. RSI < rsi_threshold
-    2. Distance from EMA is between -ema_distance_limit% and
-       +ema_distance_limit%
-    """
-    if prices.empty:
-        return pd.DataFrame()
-
-    company_lookup = (
-        universe
-        .set_index("Yahoo Symbol")[["Symbol", "Company"]]
-        .to_dict("index")
-    )
-
-    candidates = []
-
-    for ticker, frame in prices.groupby("Yahoo Symbol", sort=False):
-        frame = (
-            frame
-            .sort_values("Date")
-            .drop_duplicates("Date", keep="last")
-            .reset_index(drop=True)
-            .copy()
-        )
-
-        if len(frame) < max(ema_period, rsi_period):
-            continue
-
-        frame["EMA"] = frame["Close"].ewm(
-            span=ema_period,
-            adjust=False,
-            min_periods=ema_period,
-        ).mean()
-
-        frame["RSI"] = calculate_rsi(
-            frame["Close"],
-            period=rsi_period,
-        )
-
-        latest = frame.iloc[-1]
-
-        if pd.isna(latest["EMA"]) or pd.isna(latest["RSI"]):
-            continue
-
-        distance_pct = (
-            (
-                float(latest["Close"])
-                - float(latest["EMA"])
-            )
-            / float(latest["EMA"])
-            * 100
-        )
-
-        if (
-            float(latest["RSI"]) < rsi_threshold
-            and abs(distance_pct) <= ema_distance_limit
-        ):
-            metadata = company_lookup.get(
-                ticker,
-                {
-                    "Symbol": ticker.replace(".NS", ""),
-                    "Company": "",
-                },
-            )
-
-            candidates.append(
-                {
-                    "Symbol": metadata["Symbol"],
-                    "Company": metadata["Company"],
-                    "Yahoo Symbol": ticker,
-                    "RSI": float(latest["RSI"]),
-                    "Distance from EMA %": distance_pct,
-                    "Close": float(latest["Close"]),
-                }
-            )
-
-    if not candidates:
-        return pd.DataFrame(
-            columns=[
-                "Symbol",
-                "Company",
-                "Yahoo Symbol",
-                "RSI",
-                "Distance from EMA %",
-                "Close",
-            ]
-        )
-
-    return (
-        pd.DataFrame(candidates)
-        .sort_values(
-            ["RSI", "Distance from EMA %"],
-            ascending=[True, True],
-        )
-        .reset_index(drop=True)
-    )
-
-
-@st.cache_data(ttl=21600, show_spinner=False)
-def get_stock_fundamentals(ticker):
-    """Fetch the six Buying List fundamentals from free Yahoo data."""
-    empty = {
-        "Trailing P/E": None,
-        "P/B": None,
-        "Profit Margin %": None,
-        "Debt/Equity %": None,
-        "EV/EBITDA": None,
-        "Market Cap": None,
-    }
-
-    try:
-        info = yf.Ticker(ticker).info or {}
-
-        profit_margin = info.get("profitMargins")
-        debt_equity = info.get("debtToEquity")
-
-        return {
-            "Trailing P/E": info.get("trailingPE"),
-            "P/B": info.get("priceToBook"),
-            "Profit Margin %": (
-                float(profit_margin) * 100
-                if profit_margin is not None
-                else None
-            ),
-            "Debt/Equity %": (
-                float(debt_equity)
-                if debt_equity is not None
-                else None
-            ),
-            "EV/EBITDA": info.get("enterpriseToEbitda"),
-            "Market Cap": info.get("marketCap"),
-        }
-    except Exception:
-        return empty
-
-
-def format_market_cap(value):
-    if pd.isna(value):
-        return "N/A"
-
-    value = float(value)
-
-    if value >= 1e12:
-        return f"₹{value / 1e12:.2f}T"
-    if value >= 1e9:
-        return f"₹{value / 1e9:.2f}B"
-    if value >= 1e7:
-        return f"₹{value / 1e7:.2f}Cr"
-
-    return f"₹{value:,.0f}"
-
-
-def add_fundamentals_to_buying_list(candidates):
-    """Add the final six fundamentals to current technical candidates."""
-    if candidates.empty:
-        return candidates
-
-    rows = []
-
-    for _, row in candidates.iterrows():
-        fundamentals = get_stock_fundamentals(row["Yahoo Symbol"])
-
-        rows.append(
-            {
-                "Symbol": row["Symbol"],
-                "Company": row["Company"],
-                "Yahoo Symbol": row["Yahoo Symbol"],
-                "Close": round(float(row["Close"]), 2),
-                "RSI": round(float(row["RSI"]), 2),
-                "Distance from EMA %": round(
-                    float(row["Distance from EMA %"]),
-                    2,
-                ),
-                "Trailing P/E": fundamentals["Trailing P/E"],
-                "P/B": fundamentals["P/B"],
-                "Profit Margin %": fundamentals["Profit Margin %"],
-                "Debt/Equity %": fundamentals["Debt/Equity %"],
-                "EV/EBITDA": fundamentals["EV/EBITDA"],
-                "Market Cap": fundamentals["Market Cap"],
-            }
-        )
-
-    output = pd.DataFrame(rows)
-
-    numeric_columns = [
-        "Trailing P/E",
-        "P/B",
-        "Profit Margin %",
-        "Debt/Equity %",
-        "EV/EBITDA",
-    ]
-
-    for column in numeric_columns:
-        output[column] = pd.to_numeric(
-            output[column],
-            errors="coerce",
-        ).round(2)
-
-    output["Market Cap"] = output["Market Cap"].apply(
-        format_market_cap
-    )
-
-    output.insert(
-        0,
-        "Rank",
-        range(1, len(output) + 1),
-    )
-
-    return output
-
-
-def build_buying_chart(frame, ema_period, rsi_period, chart_days):
-    """Create a Bloomberg-style price, EMA and RSI chart."""
-    chart_frame = (
-        frame
-        .sort_values("Date")
-        .copy()
-    )
-
-    chart_frame["EMA"] = chart_frame["Close"].ewm(
-        span=ema_period,
-        adjust=False,
-        min_periods=ema_period,
-    ).mean()
-
-    chart_frame["RSI"] = calculate_rsi(
-        chart_frame["Close"],
-        period=rsi_period,
-    )
-
-    chart_frame = chart_frame.tail(chart_days)
-
-    fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.06,
-        row_heights=[0.72, 0.28],
-    )
-
-    fig.add_trace(
-        go.Candlestick(
-            x=chart_frame["Date"],
-            open=chart_frame["Open"],
-            high=chart_frame["High"],
-            low=chart_frame["Low"],
-            close=chart_frame["Close"],
-            name="Price",
-            increasing_line_color="#2dd4bf",
-            decreasing_line_color="#fb7185",
-        ),
-        row=1,
-        col=1,
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=chart_frame["Date"],
-            y=chart_frame["EMA"],
-            mode="lines",
-            name=f"EMA {ema_period}",
-            line={"color": "#f59e0b", "width": 2},
-        ),
-        row=1,
-        col=1,
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=chart_frame["Date"],
-            y=chart_frame["RSI"],
-            mode="lines",
-            name=f"RSI {rsi_period}",
-            line={"color": "#60a5fa", "width": 2},
-        ),
-        row=2,
-        col=1,
-    )
-
-    for level in [30, 35, 70]:
-        fig.add_hline(
-            y=level,
-            line_dash="dot",
-            line_color="#475569",
-            row=2,
-            col=1,
-        )
-
-    fig.update_layout(
-        height=680,
-        margin={"l": 10, "r": 10, "t": 45, "b": 10},
-        paper_bgcolor="#080c12",
-        plot_bgcolor="#080c12",
-        font={"color": "#d8e0ea", "family": "Arial"},
-        legend={
-            "orientation": "h",
-            "y": 1.04,
-            "x": 0,
-        },
-        xaxis_rangeslider_visible=False,
-        hovermode="x unified",
-    )
-
-    fig.update_xaxes(
-        gridcolor="#1f2937",
-        showline=False,
-        zeroline=False,
-    )
-    fig.update_yaxes(
-        gridcolor="#1f2937",
-        showline=False,
-        zeroline=False,
-    )
-
-    fig.update_yaxes(
-        range=[0, 100],
-        row=2,
-        col=1,
-    )
-
-    return fig
-
-
-
-def scan_prices(
-    universe,
-    prices,
-    ema_period,
-    touch_mode,
-    tolerance_pct,
-    rsi_period,
-):
-    """Calculate EMA and retain the latest qualifying touch per stock."""
-
-    if prices.empty:
-        return pd.DataFrame(
-            columns=[
-                "Rank",
-                "Symbol",
-                "Company",
-                "Signal Type",
-                "Occurrence Date",
-                "Close",
-                f"EMA {ema_period}",
-                f"RSI {rsi_period}",
-                "RSI Zone",
-                "Distance from EMA %",
-            ]
-        )
-
-    company_lookup = (
-        universe
-        .set_index("Yahoo Symbol")[["Symbol", "Company"]]
-        .to_dict("index")
-    )
-
-    results = []
-
-    for ticker, frame in prices.groupby(
-        "Yahoo Symbol",
-        sort=False,
-    ):
-        frame = (
-            frame
-            .sort_values("Date")
-            .drop_duplicates("Date", keep="last")
-            .reset_index(drop=True)
-            .copy()
-        )
-
-        if len(frame) < ema_period:
-            continue
-
-        frame["EMA"] = frame["Close"].ewm(
-            span=ema_period,
-            adjust=False,
-            min_periods=ema_period,
-        ).mean()
-
-        frame["RSI"] = calculate_rsi(
-            frame["Close"],
-            period=rsi_period,
-        )
-
-        # Keep previous values in THIS DataFrame.
-        frame["Previous Close"] = frame["Close"].shift(1)
-        frame["Previous EMA"] = frame["EMA"].shift(1)
-
-        if touch_mode == "Wick":
-            touches = (
-                frame["Low"].le(frame["EMA"])
-                & frame["High"].ge(frame["EMA"])
-                & frame["EMA"].notna()
-            )
-        else:
-            distance = (
-                (frame["Close"] - frame["EMA"]).abs()
-                / frame["EMA"].abs()
-            )
-
-            touches = (
-                distance.le(tolerance_pct / 100)
-                & frame["EMA"].notna()
-            )
-
-        hits = frame.loc[touches]
-
-        if hits.empty:
-            continue
-
-        hit = hits.iloc[-1]
-
-        previous_close = hit["Previous Close"]
-        previous_ema = hit["Previous EMA"]
-
-        close_distance = (
-            abs(
-                float(hit["Close"])
-                - float(hit["EMA"])
-            )
-            / max(
-                abs(float(hit["EMA"])),
-                1e-12,
-            )
-        )
-
-        if close_distance <= 0.001:
-            signal_type = "Close on EMA"
-        elif (
-            pd.notna(previous_close)
-            and pd.notna(previous_ema)
-        ):
-            if previous_close > previous_ema:
-                signal_type = "Touched from Above"
-            elif previous_close < previous_ema:
-                signal_type = "Touched from Below"
-            else:
-                signal_type = "Touch"
-        else:
-            signal_type = "Touch"
-
-        rsi_value = (
-            float(hit["RSI"])
-            if pd.notna(hit["RSI"])
-            else None
-        )
-
-        if rsi_value is None:
-            rsi_zone = "N/A"
-        elif rsi_value >= 70:
-            rsi_zone = "Overbought"
-        elif rsi_value <= 30:
-            rsi_zone = "Oversold"
-        else:
-            rsi_zone = "Neutral"
-
-        metadata = company_lookup.get(
-            ticker,
-            {
-                "Symbol": ticker.replace(".NS", ""),
-                "Company": "",
-            },
-        )
-
-        results.append(
-            {
-                "Symbol": metadata["Symbol"],
-                "Company": metadata["Company"],
-                "Signal Type": signal_type,
-                "Occurrence Date": hit["Date"],
-                "Close": float(hit["Close"]),
-                f"EMA {ema_period}": float(hit["EMA"]),
-                f"RSI {rsi_period}": rsi_value,
-                "RSI Zone": rsi_zone,
-                "Distance from EMA %": (
-                    (
-                        float(hit["Close"])
-                        - float(hit["EMA"])
-                    )
-                    / float(hit["EMA"])
-                    * 100
-                ),
-            }
-        )
-
-    if not results:
-        return pd.DataFrame(
-            columns=[
-                "Rank",
-                "Symbol",
-                "Company",
-                "Signal Type",
-                "Occurrence Date",
-                "Close",
-                f"EMA {ema_period}",
-                "Distance from EMA %",
-            ]
-        )
-
-    output = pd.DataFrame(results)
-
-    output["Occurrence Date"] = pd.to_datetime(
-        output["Occurrence Date"]
-    )
-
-    output = output.sort_values(
-        ["Occurrence Date", "Symbol"],
-        ascending=[False, True],
-    ).reset_index(drop=True)
-
-    output.insert(
-        0,
-        "Rank",
-        range(1, len(output) + 1),
-    )
-
-    output["Close"] = output["Close"].round(2)
-    output[f"EMA {ema_period}"] = (
-        output[f"EMA {ema_period}"].round(2)
-    )
-    output[f"RSI {rsi_period}"] = (
-        output[f"RSI {rsi_period}"].round(2)
-    )
-    output["Distance from EMA %"] = (
-        output["Distance from EMA %"].round(2)
-    )
-
-    output["Occurrence Date"] = (
-        output["Occurrence Date"]
-        .dt.strftime("%Y-%m-%d")
-    )
-
-    return output
-
-
-
-
-# ---------------- UI ----------------
+# -------------------------------------------------------------------
+# Styling. Helvetica first, then common system alternatives.
+# -------------------------------------------------------------------
 
 st.markdown(
     """
 <style>
-    .stApp {
-        background: #080c12;
-        color: #d8e0ea;
-    }
-    [data-testid="stSidebar"] {
-        background: #0d131c;
-        border-right: 1px solid #253243;
-    }
-    .terminal-header {
-        border: 1px solid #253243;
-        border-left: 4px solid #f59e0b;
-        background: #0d131c;
-        padding: 18px 22px;
-        margin-bottom: 14px;
-    }
-    .terminal-title {
-        color: #f8fafc;
-        font-size: 28px;
-        font-weight: 800;
-        letter-spacing: 0.6px;
-    }
-    .terminal-subtitle {
-        color: #8fa3b8;
-        font-size: 13px;
-        margin-top: 4px;
-        font-family: monospace;
-    }
-    .terminal-label {
-        color: #f59e0b;
-        font-family: monospace;
-        font-size: 12px;
-        letter-spacing: 1px;
-    }
-    .stMetric {
-        background: #0d131c;
-        border: 1px solid #253243;
-        border-top: 2px solid #f59e0b;
-        padding: 10px 14px;
-    }
-    div[data-testid="stDataFrame"] {
-        border: 1px solid #253243;
-    }
-    .stButton > button {
-        border-radius: 2px;
-        border: 1px solid #f59e0b;
-        background: #121a25;
-        color: #f8fafc;
-        font-weight: 700;
-    }
-    .stButton > button:hover {
-        background: #f59e0b;
-        color: #080c12;
-    }
-    .stDownloadButton > button {
-        border-radius: 2px;
-        border: 1px solid #334155;
-        background: #121a25;
-        color: #d8e0ea;
-    }
-    h1, h2, h3 {
-        letter-spacing: 0.3px;
-    }
+:root {
+    --bg: #080a0d;
+    --panel: #0d1116;
+    --panel-2: #11161d;
+    --border: #252c35;
+    --text: #e9eef3;
+    --muted: #8c98a6;
+    --accent: #f0a51a;
+    --green: #26c281;
+    --red: #ef6461;
+    --blue: #6ea8fe;
+}
+
+.stApp {
+    background: var(--bg);
+    color: var(--text);
+    font-family: Helvetica, Arial, sans-serif;
+}
+
+html, body, [class*="css"] {
+    font-family: Helvetica, Arial, sans-serif;
+}
+
+[data-testid="stSidebar"] {
+    background: #0a0d11;
+    border-right: 1px solid var(--border);
+}
+
+[data-testid="stSidebar"] * {
+    font-family: Helvetica, Arial, sans-serif;
+}
+
+.block-container {
+    max-width: 1500px;
+    padding-top: 1rem;
+    padding-bottom: 2rem;
+}
+
+.terminal-topbar {
+    background: #0b0e12;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    padding: 12px 16px;
+    margin-bottom: 12px;
+}
+
+.terminal-brand {
+    font-size: 23px;
+    font-weight: 700;
+    letter-spacing: .4px;
+}
+
+.terminal-kicker {
+    color: var(--accent);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+}
+
+.terminal-sub {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 3px;
+}
+
+.section-kicker {
+    color: var(--accent);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.4px;
+    font-weight: 700;
+    margin-top: 8px;
+}
+
+.hero {
+    padding: 20px 0 14px 0;
+}
+
+.hero-title {
+    font-size: 34px;
+    line-height: 1.04;
+    font-weight: 700;
+    margin: 4px 0;
+}
+
+.hero-copy {
+    max-width: 820px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.55;
+}
+
+.card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 16px;
+}
+
+.card-title {
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 4px;
+}
+
+.card-copy {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.metric-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--accent);
+    padding: 12px 14px;
+}
+
+.metric-label {
+    color: var(--muted);
+    font-size: 10px;
+    letter-spacing: 1px;
+}
+
+.metric-value {
+    font-size: 24px;
+    font-weight: 700;
+    margin-top: 2px;
+}
+
+.metric-note {
+    color: var(--muted);
+    font-size: 10px;
+    margin-top: 2px;
+}
+
+.signal-green {
+    color: var(--green);
+    font-weight: 700;
+}
+
+.signal-red {
+    color: var(--red);
+    font-weight: 700;
+}
+
+.small-note {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+div[data-testid="stMetric"] {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--accent);
+    padding: 8px 12px;
+}
+
+.stButton > button,
+.stDownloadButton > button {
+    border-radius: 2px;
+    border: 1px solid #4b5563;
+    background: #12171e;
+    color: var(--text);
+    font-weight: 700;
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover {
+    border-color: var(--accent);
+    background: #171d25;
+}
+
+div[data-testid="stDataFrame"] {
+    border: 1px solid var(--border);
+}
+
+div[data-baseweb="tab-list"] {
+    gap: 2px;
+}
+
+button[data-baseweb="tab"] {
+    background: #0b0f14;
+    border: 1px solid var(--border);
+    color: var(--muted);
+}
+
+button[data-baseweb="tab"][aria-selected="true"] {
+    color: var(--text);
+    border-bottom: 2px solid var(--accent);
+}
+
+hr {
+    border-color: var(--border);
+}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-st.markdown(
-    """
-<div class="terminal-header">
-    <div class="terminal-label">NSE / EQUITY SCREENER / TECHNICAL + FUNDAMENTAL</div>
-    <div class="terminal-title">NIFTY 500 EMA TERMINAL</div>
-    <div class="terminal-subtitle">EMA 255 · RSI · CURRENT BUY CANDIDATES · FREE DATA</div>
+
+# -------------------------------------------------------------------
+# Shared helpers
+# -------------------------------------------------------------------
+
+def terminal_header(page_title: str, subtitle: str):
+    universe_count = (
+        len(st.session_state.get("universe", []))
+        if "universe" in st.session_state
+        else 0
+    )
+    scan_date = st.session_state.get("scan_date", "NOT RUN")
+
+    st.markdown(
+        f"""
+<div class="terminal-topbar">
+  <div class="terminal-kicker">NSE EQUITY RESEARCH TERMINAL</div>
+  <div class="terminal-brand">NIFTY MARKET TERMINAL</div>
+  <div class="terminal-sub">
+      {page_title} · {subtitle} · UNIVERSE {universe_count or "—"}
+      · LAST SCAN {scan_date}
+  </div>
 </div>
 """,
-    unsafe_allow_html=True,
-)
-
-with st.sidebar:
-    st.header("Scanner Settings")
-
-    ema_period = st.number_input(
-        "EMA period",
-        min_value=2,
-        max_value=1000,
-        value=255,
-        step=1,
+        unsafe_allow_html=True,
     )
 
-    history_years = st.slider(
-        "Price history",
-        min_value=2,
-        max_value=8,
-        value=4,
+
+def card(title: str, copy: str):
+    st.markdown(
+        f"""
+<div class="card">
+  <div class="card-title">{title}</div>
+  <div class="card-copy">{copy}</div>
+</div>
+""",
+        unsafe_allow_html=True,
     )
 
-    rsi_period = st.number_input(
-        "RSI period",
-        min_value=2,
-        max_value=100,
-        value=14,
-        step=1,
+
+def require_scan():
+    if "snapshot" not in st.session_state:
+        st.info(
+            "Run the market scan from **Scan Engine** first. "
+            "All strategy pages reuse that cached scan."
+        )
+        st.stop()
+
+
+def market_chart(
+    frame: pd.DataFrame,
+    symbol: str,
+    overlays: list[str],
+    days: int = 180,
+):
+    chart = frame.sort_values("Date").tail(days).copy()
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Candlestick(
+            x=chart["Date"],
+            open=chart["Open"],
+            high=chart["High"],
+            low=chart["Low"],
+            close=chart["Close"],
+            name=symbol,
+            increasing_line_color="#26c281",
+            decreasing_line_color="#ef6461",
+        )
     )
 
-    touch_label = st.radio(
-        "Signal definition",
-        [
-            "Wick touches EMA",
-            "Close near EMA",
-        ],
+    colors = {
+        "EMA9": "#6ea8fe",
+        "EMA21": "#f0a51a",
+        "SMA20": "#8b5cf6",
+        "SMA50": "#14b8a6",
+        "SMA200": "#ef4444",
+        "EMA255": "#f59e0b",
+    }
+
+    for col in overlays:
+        if col in chart.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=chart["Date"],
+                    y=chart[col],
+                    mode="lines",
+                    name=col,
+                    line={
+                        "width": 1.7,
+                        "color": colors.get(col, "#cbd5e1"),
+                    },
+                )
+            )
+
+    fig.update_layout(
+        height=520,
+        margin={"l": 10, "r": 10, "t": 30, "b": 10},
+        paper_bgcolor="#080a0d",
+        plot_bgcolor="#080a0d",
+        font={"family": "Helvetica, Arial, sans-serif", "color": "#e9eef3"},
+        xaxis={"gridcolor": "#1d232b", "rangeslider_visible": False},
+        yaxis={"gridcolor": "#1d232b"},
+        legend={"orientation": "h", "y": 1.02, "x": 0},
+        hovermode="x unified",
     )
 
-    tolerance_pct = st.number_input(
-        "Close tolerance %",
-        min_value=0.05,
-        max_value=5.0,
-        value=0.50,
-        step=0.05,
-        disabled=(
-            touch_label == "Wick touches EMA"
+    return fig
+
+
+# -------------------------------------------------------------------
+# Pages
+# -------------------------------------------------------------------
+
+def home_page():
+    terminal_header(
+        "Home",
+        "A simple workflow for finding structured equity setups",
+    )
+
+    st.markdown(
+        """
+<div class="hero">
+  <div class="section-kicker">Market research workspace</div>
+  <div class="hero-title">Find. Filter. Validate.</div>
+  <div class="hero-copy">
+    Scan India's broad listed-equity universe, separate market regime from
+    momentum and pullback conditions, then use convergence to create a short
+    research list. The terminal is designed as a decision-support tool, not
+    an automatic trading system.
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    if "universe" not in st.session_state:
+        ucount = "—"
+    else:
+        ucount = f"{len(st.session_state['universe']):,}"
+
+    snapshot = st.session_state.get("snapshot", pd.DataFrame())
+    conv = st.session_state.get("convergence", pd.DataFrame())
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("UNIVERSE", ucount)
+    c2.metric("STOCKS SCANNED", f"{len(snapshot):,}")
+    c3.metric(
+        "BULLISH REGIME",
+        (
+            f"{int(snapshot['BullRegime'].sum()):,}"
+            if not snapshot.empty
+            else "—"
+        ),
+    )
+    c4.metric(
+        "HIGH-CONVICTION",
+        (
+            f"{int((conv['ConvergenceScore'] >= 65).sum()):,}"
+            if not conv.empty
+            else "—"
         ),
     )
 
-    batch_size = st.select_slider(
-        "Download batch size",
-        options=[25, 50, 75, 100],
-        value=50,
+    st.markdown('<div class="section-kicker">Research modules</div>', unsafe_allow_html=True)
+
+    modules = st.columns(4)
+
+    with modules[0]:
+        card(
+            "01 · MARKET REGIME",
+            "Is the long-term structure supportive? Uses 50/200 SMA and price location.",
+        )
+
+    with modules[1]:
+        card(
+            "02 · MOMENTUM",
+            "Short-term direction and fresh 9/21 EMA crossovers.",
+        )
+
+    with modules[2]:
+        card(
+            "03 · SWING STRUCTURE",
+            "Medium-term trend alignment using 20/50 SMA.",
+        )
+
+    with modules[3]:
+        card(
+            "04 · PULLBACK",
+            "Potential oversold pullbacks near EMA 255.",
+        )
+
+    st.markdown('<div class="section-kicker">How to use</div>', unsafe_allow_html=True)
+
+    steps = st.columns(4)
+    for i, (title, copy) in enumerate(
+        [
+            ("1. Scan", "Download one shared price dataset for the whole universe."),
+            ("2. Explore", "Review each strategy as a separate market dimension."),
+            ("3. Converge", "Use Trend Score + Entry Score rather than double-counting indicators."),
+            ("4. Shortlist", "Only finalists receive slower fundamental enrichment."),
+        ]
+    ):
+        with steps[i]:
+            card(title, copy)
+
+    st.caption(
+        "Data source: NSE constituent files + Yahoo Finance daily prices. "
+        "Signals are research candidates and are not investment advice."
+    )
+
+
+def scan_page():
+    terminal_header(
+        "Scan Engine",
+        "One shared download. All strategies reuse the result.",
+    )
+
+    st.markdown(
+        '<div class="section-kicker">Market data controls</div>',
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3, c4 = st.columns([1.4, 1, 1, 1])
+
+    with c1:
+        universe_name = st.selectbox(
+            "Universe",
+            ["NIFTY TOTAL MARKET", "NIFTY 500"],
+            index=0,
+        )
+
+    with c2:
+        history_years = st.selectbox(
+            "History",
+            [3, 4, 5],
+            index=1,
+        )
+
+    with c3:
+        batch_size = st.select_slider(
+            "Batch size",
+            options=[50, 75, 100],
+            value=75,
+        )
+
+    with c4:
+        if st.button(
+            "RUN MARKET SCAN",
+            type="primary",
+            use_container_width=True,
+        ):
+            run_scan = True
+        else:
+            run_scan = False
+
+    if run_scan:
+        try:
+            with st.spinner("Loading current universe..."):
+                universe = load_universe(universe_name)
+
+            progress = st.progress(0)
+            status = st.empty()
+
+            def update(batch, total, failures):
+                progress.progress(batch / total)
+                status.write(
+                    f"Downloading batch {batch}/{total} · "
+                    f"unresolved {failures}"
+                )
+
+            prices, failures = download_prices(
+                universe,
+                years=history_years,
+                batch_size=batch_size,
+                progress_callback=update,
+            )
+
+            if prices.empty:
+                st.error("No price data returned.")
+                st.stop()
+
+            status.write("Calculating all indicators once...")
+            indicators = calculate_indicators(prices)
+            snapshot = latest_snapshot(indicators, universe)
+            snapshot = add_days_since_cross(indicators, snapshot)
+            convergence = convergence_table(snapshot)
+
+            st.session_state["universe"] = universe
+            st.session_state["prices"] = prices
+            st.session_state["indicators"] = indicators
+            st.session_state["snapshot"] = snapshot
+            st.session_state["convergence"] = convergence
+            st.session_state["failures"] = failures
+            st.session_state["scan_date"] = (
+                datetime.now().strftime("%Y-%m-%d %H:%M")
+            )
+
+            progress.empty()
+            status.empty()
+
+            st.success(
+                f"Scan complete. {len(snapshot):,} stocks processed."
+            )
+
+        except Exception as exc:
+            st.error("The market scan failed.")
+            with st.expander("Technical details"):
+                st.exception(exc)
+
+    if "snapshot" in st.session_state:
+        snapshot = st.session_state["snapshot"]
+        failures = st.session_state.get("failures", [])
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("CONSTITUENTS", f"{len(st.session_state['universe']):,}")
+        m2.metric("PRICE SERIES", f"{len(snapshot):,}")
+        m3.metric(
+            "BULLISH REGIME",
+            f"{int(snapshot['BullRegime'].sum()):,}",
+        )
+        m4.metric(
+            "PULLBACK SETUPS",
+            f"{int(snapshot['Pullback'].sum()):,}",
+        )
+
+        if failures:
+            st.warning(
+                f"{len(failures)} symbols remained unresolved after retry."
+            )
+
+        st.markdown('<div class="section-kicker">Data quality</div>', unsafe_allow_html=True)
+
+        q1, q2, q3 = st.columns(3)
+        q1.metric(
+            "Coverage",
+            f"{len(snapshot) / max(len(st.session_state['universe']), 1) * 100:.1f}%",
+        )
+        q2.metric(
+            "Latest observation",
+            pd.to_datetime(snapshot["Date"]).max().strftime("%d %b %Y"),
+        )
+        q3.metric(
+            "Stored history",
+            f"{len(st.session_state['prices']):,} daily rows",
+        )
+
+        st.download_button(
+            "EXPORT SNAPSHOT CSV",
+            data=snapshot.to_csv(index=False).encode(),
+            file_name="nifty_total_market_snapshot.csv",
+            mime="text/csv",
+        )
+
+
+def strategy_page(strategy: str):
+    require_scan()
+    snapshot = st.session_state["snapshot"]
+    indicators = st.session_state["indicators"]
+    prices = st.session_state["prices"]
+
+    titles = {
+        "regime": (
+            "Market Regime",
+            "Long-term trend context using 50/200 SMA.",
+        ),
+        "momentum": (
+            "9/21 EMA Momentum",
+            "Short-term direction and fresh momentum turns.",
+        ),
+        "swing": (
+            "20/50 Swing Structure",
+            "Medium-term trend alignment.",
+        ),
+        "pullback": (
+            "EMA 255 Pullback",
+            "Oversold price near the long-term EMA.",
+        ),
+    }
+
+    title, subtitle = titles[strategy]
+    terminal_header(title, subtitle)
+
+    if strategy == "regime":
+        mask = snapshot["BullRegime"]
+        table = snapshot.loc[
+            mask,
+            [
+                "Symbol",
+                "Company",
+                "Close",
+                "SMA50",
+                "SMA200",
+                "DaysSince50_200",
+            ],
+        ].copy()
+
+        table["State"] = "BULLISH"
+
+    elif strategy == "momentum":
+        mode = st.radio(
+            "View",
+            ["Fresh Cross", "Bullish Momentum", "Bearish Momentum"],
+            horizontal=True,
+        )
+
+        if mode == "Fresh Cross":
+            mask = snapshot["MomentumFresh"]
+        elif mode == "Bullish Momentum":
+            mask = snapshot["BullMomentum"]
+        else:
+            mask = ~snapshot["BullMomentum"]
+
+        table = snapshot.loc[
+            mask,
+            [
+                "Symbol",
+                "Company",
+                "Close",
+                "EMA9",
+                "EMA21",
+                "DaysSince9_21",
+                "RSI14",
+                "EMA255DistancePct",
+            ],
+        ].copy()
+
+    elif strategy == "swing":
+        mask = snapshot["BullSwing"]
+        table = snapshot.loc[
+            mask,
+            [
+                "Symbol",
+                "Company",
+                "Close",
+                "SMA20",
+                "SMA50",
+                "DaysSince20_50",
+                "RSI14",
+                "EMA255DistancePct",
+            ],
+        ].copy()
+
+    else:
+        mask = snapshot["Pullback"]
+        table = snapshot.loc[
+            mask,
+            [
+                "Symbol",
+                "Company",
+                "Close",
+                "RSI14",
+                "EMA255DistancePct",
+                "BullRegime",
+                "BullSwing",
+                "BullMomentum",
+            ],
+        ].copy()
+
+    st.metric(
+        "QUALIFYING STOCKS",
+        f"{len(table):,}",
+    )
+
+    search = st.text_input(
+        "Search",
+        placeholder="Symbol or company",
+    )
+
+    if search:
+        mask_text = (
+            table["Symbol"].str.contains(search, case=False, na=False)
+            | table["Company"].str.contains(search, case=False, na=False)
+        )
+        table = table.loc[mask_text]
+
+    st.dataframe(
+        table,
+        use_container_width=True,
+        hide_index=True,
+        height=520,
+    )
+
+    st.markdown('<div class="section-kicker">Chart console</div>', unsafe_allow_html=True)
+
+    if not table.empty:
+        chosen = st.selectbox(
+            "Select stock",
+            table["Symbol"].tolist(),
+        )
+
+        row = snapshot.loc[
+            snapshot["Symbol"] == chosen
+        ].iloc[0]
+
+        frame = prices.loc[
+            prices["Yahoo Symbol"] == row["Yahoo Symbol"]
+        ].copy()
+
+        if strategy == "regime":
+            overlays = ["SMA50", "SMA200"]
+        elif strategy == "momentum":
+            overlays = ["EMA9", "EMA21", "EMA255"]
+        elif strategy == "swing":
+            overlays = ["SMA20", "SMA50", "EMA255"]
+        else:
+            overlays = ["EMA255"]
+
+        st.plotly_chart(
+            market_chart(
+                frame,
+                chosen,
+                overlays,
+                days=180,
+            ),
+            use_container_width=True,
+            config={"displaylogo": False},
+        )
+
+
+def convergence_page():
+    require_scan()
+    df = st.session_state["convergence"].copy()
+
+    terminal_header(
+        "Convergence Engine",
+        "Trend and entry conditions without double-counting related signals.",
+    )
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "HIGH CONVICTION",
+        f"{int((df['ConvergenceScore'] >= 65).sum()):,}",
+    )
+    c2.metric(
+        "STRONG TREND",
+        f"{int((df['TrendScore'] >= 60).sum()):,}",
+    )
+    c3.metric(
+        "PULLBACK SETUPS",
+        f"{int(df['Pullback'].sum()):,}",
+    )
+
+    min_score = st.slider(
+        "Minimum convergence score",
+        0,
+        100,
+        65,
+        5,
+    )
+
+    output = df.loc[
+        df["ConvergenceScore"] >= min_score,
+        [
+            "Symbol",
+            "Company",
+            "Close",
+            "ConvergenceScore",
+            "TrendScore",
+            "EntryScore",
+            "Setup",
+            "BullRegime",
+            "BullSwing",
+            "BullMomentum",
+            "Pullback",
+            "RSI14",
+            "EMA255DistancePct",
+        ],
+    ].copy()
+
+    output.insert(
+        0,
+        "Rank",
+        range(1, len(output) + 1),
+    )
+
+    st.dataframe(
+        output,
+        use_container_width=True,
+        hide_index=True,
+        height=560,
+    )
+
+    st.download_button(
+        "EXPORT CONVERGENCE CSV",
+        data=output.to_csv(index=False).encode(),
+        file_name="nifty_total_market_convergence.csv",
+        mime="text/csv",
+    )
+
+
+def buying_list_page():
+    require_scan()
+    df = st.session_state["convergence"].copy()
+
+    terminal_header(
+        "Final Buying List",
+        "Research shortlist. Fundamentals are fetched only for finalists.",
+    )
+
+    shortlist = df.loc[
+        (df["TrendScore"] >= 60)
+        & (
+            (df["EntryScore"] >= 15)
+            | df["Pullback"]
+            | df["MomentumFresh"]
+        )
+    ].copy()
+
+    shortlist = shortlist.sort_values(
+        ["ConvergenceScore", "TrendScore", "EntryScore"],
+        ascending=False,
+    ).head(25)
+
+    if shortlist.empty:
+        st.info(
+            "No stocks currently meet the final shortlist rules."
+        )
+        return
+
+    rows = []
+
+    with st.spinner(
+        f"Fetching fundamentals for {len(shortlist)} finalists..."
+    ):
+        for _, row in shortlist.iterrows():
+            fund = fundamental_snapshot(row["Yahoo Symbol"])
+
+            rows.append(
+                {
+                    "Symbol": row["Symbol"],
+                    "Company": row["Company"],
+                    "Setup": row["Setup"],
+                    "Score": int(row["ConvergenceScore"]),
+                    "Trend": int(row["TrendScore"]),
+                    "Entry": int(row["EntryScore"]),
+                    "RSI": round(float(row["RSI14"]), 2),
+                    "EMA255 Dist %": round(
+                        float(row["EMA255DistancePct"]),
+                        2,
+                    ),
+                    "P/E": fund["PE"],
+                    "P/B": fund["PB"],
+                    "Margin %": fund["Profit Margin %"],
+                    "Debt/Equity": fund["Debt/Equity"],
+                    "EV/EBITDA": fund["EV/EBITDA"],
+                    "Market Cap": fund["Market Cap"],
+                    "Yahoo Symbol": row["Yahoo Symbol"],
+                }
+            )
+
+    final = pd.DataFrame(rows)
+
+    for column in [
+        "P/E",
+        "P/B",
+        "Margin %",
+        "Debt/Equity",
+        "EV/EBITDA",
+    ]:
+        final[column] = pd.to_numeric(
+            final[column],
+            errors="coerce",
+        ).round(2)
+
+    final = final.reset_index(drop=True)
+
+    st.metric(
+        "FINAL RESEARCH CANDIDATES",
+        f"{len(final):,}",
+    )
+
+    st.dataframe(
+        final.drop(columns=["Yahoo Symbol"]),
+        use_container_width=True,
+        hide_index=True,
+        height=560,
+    )
+
+    st.download_button(
+        "EXPORT FINAL BUYING LIST",
+        data=final.drop(columns=["Yahoo Symbol"]).to_csv(index=False).encode(),
+        file_name="nifty_total_market_buying_list.csv",
+        mime="text/csv",
     )
 
     st.divider()
 
-    if st.button(
-        "Clear cached market data",
-        use_container_width=True,
-    ):
-        get_nifty500_constituents.clear()
-        download_price_batch.clear()
-        st.success("Market-data cache cleared.")
-
-    run_scan = st.button(
-        "Run Nifty 500 Scan",
-        type="primary",
-        use_container_width=True,
-    )
-
-
-if run_scan:
-    try:
-        progress_bar = st.progress(0.0)
-        status = st.empty()
-
-        with st.spinner(
-            "Loading current Nifty 500 constituents..."
-        ):
-            universe = get_nifty500_constituents()
-
-        status.info(
-            f"Loaded {len(universe):,} constituents. "
-            "Downloading daily price history..."
-        )
-
-        end_date = date.today() + timedelta(days=1)
-        start_date = (
-            end_date
-            - timedelta(
-                days=int(history_years * 365.25)
-            )
-        )
-
-        def update_progress(batch, total, failures):
-            progress_bar.progress(batch / total)
-            status.info(
-                f"Downloading batch {batch}/{total} "
-                f"· unresolved tickers: {failures}"
-            )
-
-        prices, failures = download_all_prices(
-            tickers=universe["Yahoo Symbol"].tolist(),
-            start_date=start_date.isoformat(),
-            end_date=end_date.isoformat(),
-            batch_size=batch_size,
-            progress_callback=update_progress,
-        )
-
-        if prices.empty:
-            progress_bar.empty()
-            status.error(
-                "No usable historical price data was returned."
-            )
-            st.stop()
-
-        progress_bar.progress(1.0)
-
-        status.info(
-            f"Downloaded "
-            f"{prices['Yahoo Symbol'].nunique():,} stocks. "
-            "Calculating EMA signals..."
-        )
-
-        touch_mode = (
-            "Wick"
-            if touch_label == "Wick touches EMA"
-            else "Close"
-        )
-
-        with st.spinner(
-            f"Calculating EMA {ema_period}..."
-        ):
-            signals = scan_prices(
-                universe=universe,
-                prices=prices,
-                ema_period=int(ema_period),
-                touch_mode=touch_mode,
-                tolerance_pct=float(tolerance_pct),
-                rsi_period=int(rsi_period),
-            )
-
-            buying_candidates = get_latest_buy_candidates(
-                universe=universe,
-                prices=prices,
-                ema_period=int(ema_period),
-                rsi_period=int(rsi_period),
-                rsi_threshold=35.0,
-                ema_distance_limit=2.0,
-            )
-
-            buying_list = add_fundamentals_to_buying_list(
-                buying_candidates
-            )
-
-        st.session_state["signals"] = signals
-        st.session_state["buying_list"] = buying_list
-        st.session_state["prices"] = prices
-        st.session_state["universe"] = universe
-        st.session_state["ema_period"] = int(ema_period)
-        st.session_state["scan_meta"] = {
-            "constituents": len(universe),
-            "downloaded": int(
-                prices["Yahoo Symbol"].nunique()
-            ),
-            "failures": failures,
-            "scan_date": date.today().isoformat(),
-            "touch_label": touch_label,
-            "history_years": history_years,
-            "rsi_period": int(rsi_period),
-        }
-
-        progress_bar.empty()
-        status.empty()
-
-    except Exception as exc:
-        st.error(
-            "The scan could not be completed. "
-            "Please try again in a few minutes."
-        )
-        with st.expander("Technical details"):
-            st.exception(exc)
-
-
-if "signals" not in st.session_state:
-    st.info(
-        "Configure the scanner in the sidebar and click "
-        "**Run Nifty 500 Scan**."
-    )
-    st.stop()
-
-
-signals = st.session_state["signals"]
-current_ema = st.session_state["ema_period"]
-meta = st.session_state["scan_meta"]
-
-if meta["failures"]:
-    st.warning(
-        f"{len(meta['failures'])} ticker(s) could not be "
-        "downloaded after retries."
-    )
-
-with st.expander("Scan details"):
-    st.write(
-        {
-            "Scan date": meta["scan_date"],
-            "Constituents loaded": meta["constituents"],
-            "Stocks with price data": meta["downloaded"],
-            "Failed tickers": len(meta["failures"]),
-            "EMA period": current_ema,
-            "RSI period": meta.get("rsi_period", 14),
-            "Signal definition": meta["touch_label"],
-            "History downloaded": (
-                f"{meta['history_years']} years"
-            ),
-        }
-    )
-
-metric_1, metric_2, metric_3 = st.columns(3)
-
-metric_1.metric("Signals found", f"{len(signals):,}")
-
-if signals.empty:
-    metric_2.metric("Most recent signal", "None")
-    metric_3.metric("Signals in last 7 days", "0")
-else:
-    metric_2.metric(
-        "Most recent signal",
-        signals["Occurrence Date"].iloc[0],
-    )
-
-    occurrence_dates = pd.to_datetime(
-        signals["Occurrence Date"]
-    )
-
-    recent_count = int(
-        (
-            occurrence_dates
-            >= pd.Timestamp.today().normalize()
-            - pd.Timedelta(days=7)
-        ).sum()
-    )
-
-    metric_3.metric(
-        "Signals in last 7 days",
-        recent_count,
-    )
-
-st.markdown(
-    '<div class="terminal-label">WATCHLIST / BUYING CANDIDATES</div>',
-    unsafe_allow_html=True,
-)
-st.subheader("Buying List")
-
-buying_list = st.session_state.get(
-    "buying_list",
-    pd.DataFrame(),
-)
-stored_prices = st.session_state.get(
-    "prices",
-    pd.DataFrame(),
-)
-
-st.caption(
-    "LIVE FILTER: RSI < 35  |  DISTANCE FROM EMA 255 ≤ ±2%"
-)
-
-if buying_list.empty:
-    st.info(
-        "No stocks currently meet both Buying List conditions."
-    )
-else:
-    buy_col_1, buy_col_2, buy_col_3 = st.columns([1, 1, 2])
-
-    buy_col_1.metric(
-        "BUY CANDIDATES",
-        f"{len(buying_list):,}",
-    )
-    buy_col_2.metric(
-        "LOWEST RSI",
-        f"{buying_list['RSI'].min():.2f}",
-    )
-    buy_col_3.metric(
-        "FILTER",
-        "RSI < 35 | EMA ±2%",
-    )
-
-    display_columns = [
-        "Rank",
-        "Symbol",
-        "Company",
-        "Close",
-        "RSI",
-        "Distance from EMA %",
-        "Trailing P/E",
-        "P/B",
-        "Profit Margin %",
-        "Debt/Equity %",
-        "EV/EBITDA",
-        "Market Cap",
-    ]
-
-    display_columns = [
-        column
-        for column in display_columns
-        if column in buying_list.columns
-    ]
-
-    st.dataframe(
-        buying_list[display_columns],
-        use_container_width=True,
-        hide_index=True,
-        height=420,
-    )
-
-    buying_csv = buying_list[
-        display_columns
-    ].to_csv(index=False).encode("utf-8")
-
-    st.download_button(
-        "EXPORT BUYING LIST CSV",
-        data=buying_csv,
-        file_name="nifty500_buying_list.csv",
-        mime="text/csv",
-    )
-
-    show_charts = st.toggle(
-        "SHOW CHARTS FOR BUYING LIST STOCKS",
+    show_chart = st.toggle(
+        "SHOW CHART FOR BUYING LIST STOCK",
         value=False,
     )
 
-    if show_charts:
-        st.markdown(
-            '<div class="terminal-label">CHART CONSOLE</div>',
-            unsafe_allow_html=True,
+    if show_chart:
+        selected = st.selectbox(
+            "Stock",
+            final["Symbol"].tolist(),
         )
 
-        chart_left, chart_right = st.columns([2, 1])
-
-        with chart_left:
-            selected_symbol = st.selectbox(
-                "Select Buying List Stock",
-                buying_list["Symbol"].tolist(),
-            )
-
-        with chart_right:
-            chart_days = st.selectbox(
-                "Chart Window",
-                [90, 180, 252, 365],
-                index=2,
-            )
-
-        selected_row = buying_list.loc[
-            buying_list["Symbol"] == selected_symbol
+        row = final.loc[
+            final["Symbol"] == selected
         ].iloc[0]
 
-        selected_ticker = selected_row["Yahoo Symbol"]
-
-        chart_frame = stored_prices.loc[
-            stored_prices["Yahoo Symbol"] == selected_ticker
+        frame = st.session_state["prices"].loc[
+            st.session_state["prices"]["Yahoo Symbol"]
+            == row["Yahoo Symbol"]
         ].copy()
 
-        if chart_frame.empty:
-            st.warning(
-                "Price history is not available for this stock."
-            )
-        else:
-            st.markdown(
-                f"### {selected_symbol}  |  {selected_row['Company']}"
-            )
-
-            chart_metrics = st.columns(4)
-            chart_metrics[0].metric(
-                "CLOSE",
-                f"₹{selected_row['Close']:.2f}",
-            )
-            chart_metrics[1].metric(
-                "RSI",
-                f"{selected_row['RSI']:.2f}",
-            )
-            chart_metrics[2].metric(
-                "EMA DISTANCE",
-                f"{selected_row['Distance from EMA %']:.2f}%",
-            )
-            chart_metrics[3].metric(
-                "MARKET CAP",
-                selected_row["Market Cap"],
-            )
-
-            chart = build_buying_chart(
-                frame=chart_frame,
-                ema_period=current_ema,
-                rsi_period=meta.get("rsi_period", 14),
-                chart_days=int(chart_days),
-            )
-
-            st.plotly_chart(
-                chart,
-                use_container_width=True,
-                config={
-                    "displaylogo": False,
-                    "scrollZoom": True,
-                },
-            )
-
-st.divider()
-
-st.markdown(
-    '<div class="terminal-label">SIGNAL MONITOR / HISTORICAL TOUCHES</div>',
-    unsafe_allow_html=True,
-)
-st.subheader("Ranked EMA Signals")
-
-filter_col_1, filter_col_2 = st.columns([2, 1])
-
-with filter_col_1:
-    search = st.text_input(
-        "Search symbol or company",
-        placeholder="RELIANCE, TCS, HDFC...",
-    )
-
-with filter_col_2:
-    max_days = st.number_input(
-        "Only signals from last N days",
-        min_value=1,
-        max_value=3650,
-        value=30,
-        step=1,
-    )
-
-filtered = signals.copy()
-
-if not filtered.empty:
-    cutoff = (
-        pd.Timestamp.today().normalize()
-        - pd.Timedelta(days=int(max_days))
-    )
-
-    filtered = filtered[
-        pd.to_datetime(
-            filtered["Occurrence Date"]
-        ) >= cutoff
-    ].copy()
-
-if search:
-    mask = (
-        filtered["Symbol"].str.contains(
-            search,
-            case=False,
-            na=False,
+        st.plotly_chart(
+            market_chart(
+                frame,
+                selected,
+                ["EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255"],
+                days=252,
+            ),
+            use_container_width=True,
+            config={"displaylogo": False},
         )
-        | filtered["Company"].str.contains(
-            search,
-            case=False,
-            na=False,
-        )
-    )
 
-    filtered = filtered.loc[mask]
 
-st.caption(
-    f"Showing {len(filtered):,} "
-    f"of {len(signals):,} detected signals."
+# -------------------------------------------------------------------
+# Navigation
+# -------------------------------------------------------------------
+
+pages = {
+    "Overview": [
+        st.Page(home_page, title="Home", icon="⌂"),
+    ],
+    "Workflow": [
+        st.Page(scan_page, title="Scan Engine", icon="↻"),
+    ],
+    "Strategies": [
+        st.Page(
+            lambda: strategy_page("regime"),
+            title="Market Regime",
+            icon="◈",
+        ),
+        st.Page(
+            lambda: strategy_page("momentum"),
+            title="9/21 Momentum",
+            icon="↗",
+        ),
+        st.Page(
+            lambda: strategy_page("swing"),
+            title="20/50 Swing",
+            icon="↗",
+        ),
+        st.Page(
+            lambda: strategy_page("pullback"),
+            title="EMA 255 Pullback",
+            icon="⌁",
+        ),
+    ],
+    "Decision": [
+        st.Page(
+            convergence_page,
+            title="Convergence",
+            icon="⊙",
+        ),
+        st.Page(
+            buying_list_page,
+            title="Final Buying List",
+            icon="★",
+        ),
+    ],
+}
+
+pg = st.navigation(
+    pages,
+    position="top",
+    expanded=False,
 )
 
-st.dataframe(
-    filtered,
-    use_container_width=True,
-    hide_index=True,
-    height=600,
-)
-
-csv = signals.to_csv(index=False).encode("utf-8")
-
-st.download_button(
-    "Download nifty500_ema_signals.csv",
-    data=csv,
-    file_name="nifty500_ema_signals.csv",
-    mime="text/csv",
-)
-
-if meta["failures"]:
-    failed_csv = (
-        pd.DataFrame(
-            {"Yahoo Symbol": meta["failures"]}
-        )
-        .to_csv(index=False)
-        .encode("utf-8")
-    )
-
-    st.download_button(
-        "Download failed tickers",
-        data=failed_csv,
-        file_name="nifty500_failed_tickers.csv",
-        mime="text/csv",
-    )
-
-with st.expander("Signal methodology"):
+with st.sidebar:
     st.markdown(
-        f"""
-**Universe:** Current Nifty 500 constituents.
-
-**EMA:** EMA calculated using **{current_ema}** daily closing prices.
-
-**RSI:** Wilder's RSI using the selected period. RSI >= 70 is **Overbought**,
-RSI <= 30 is **Oversold**, otherwise it is **Neutral**.
-
-**Wick touch:** `Low ≤ EMA ≤ High`
-
-**Close near EMA:** Close is within the selected percentage tolerance.
-
-Only the **latest qualifying occurrence for each stock** is retained.
-Results are ranked by occurrence date, newest first.
-
-### Buying List
-
-A stock is included only when its **latest RSI is below 35** and its
-latest close is within **±2% of the EMA 255**.
-
-The Buying List shows six fundamental and price indicators:
-
-**PE | Sector PE | P/B | ROE | 52W Low | 52W High**
-
-The **52W Range** column shows the stock's current position within its
-52-week low to high range. Dividend yield is intentionally excluded.
-"""
+        """
+<div class="section-kicker">Terminal controls</div>
+<div class="small-note">
+Use Scan Engine once. Every strategy page reads the shared cached dataset.
+</div>
+""",
+        unsafe_allow_html=True,
     )
+
+    if "snapshot" in st.session_state:
+        st.success("SCAN READY")
+    else:
+        st.warning("NO ACTIVE SCAN")
+
+    st.divider()
+
+    st.caption(
+        "Built for research. Public market data. "
+        "No broker API key required."
+    )
+
+pg.run()
