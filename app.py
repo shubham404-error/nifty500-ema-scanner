@@ -744,8 +744,19 @@ def strategy_page(strategy: str):
         table=snapshot.loc[snapshot["Pullback"]].copy()
         columns=["Symbol","Company","Close","RSI14","EMA255DistancePct","BullRegime","BullSwing","RS3MPct","VolumeRatio","AvgTradedValue20","LiquidityBucket","ATRPercent"]
 
+    # Defensive schema handling. A Streamlit session can retain a snapshot
+    # created before a newly added feature column existed. Missing display
+    # columns should not crash a strategy page.
+    for col in columns:
+        if col not in table.columns:
+            table[col] = pd.NA
+
+    if "AvgTradedValue20" not in table.columns:
+        table["AvgTradedValue20"] = pd.NA
+
     thresholds={"All":0,"₹1 Cr+":1_00_00_000,"₹5 Cr+":5_00_00_000,"₹25 Cr+":25_00_00_000}
-    table=table.loc[table["AvgTradedValue20"].fillna(0)>=thresholds[liquidity_filter], columns].copy()
+    liquidity_mask = table["AvgTradedValue20"].fillna(0) >= thresholds[liquidity_filter]
+    table = table.loc[liquidity_mask, columns].copy()
     st.metric("QUALIFYING STOCKS", f"{len(table):,}")
 
     search=st.text_input("Search",placeholder="Symbol or company",key=f"search_{strategy}")
