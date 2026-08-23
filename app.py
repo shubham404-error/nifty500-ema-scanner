@@ -1,4 +1,3 @@
-
 import io
 import time
 from datetime import date, timedelta
@@ -8,10 +7,6 @@ import requests
 import streamlit as st
 import yfinance as yf
 
-
-# ---------------------------------------------------------
-# App configuration
-# ---------------------------------------------------------
 
 st.set_page_config(
     page_title="Nifty 500 EMA Scanner",
@@ -31,45 +26,30 @@ USER_AGENT = (
 )
 
 
-# ---------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------
-
-@st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def get_nifty500_constituents():
-    """
-    Download and validate the current Nifty 500 constituent file.
-
-    Two public URLs are attempted to improve resilience.
-    """
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/csv,text/plain,*/*",
     }
-
     errors = []
 
     for url in NIFTY500_URLS:
         try:
-            response = requests.get(
-                url,
-                headers=headers,
-                timeout=30,
-            )
+            response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
-
             df = pd.read_csv(io.StringIO(response.text))
 
-            normalized = {
+            columns = {
                 str(column).strip().lower(): column
                 for column in df.columns
             }
 
-            symbol_col = normalized.get("symbol")
+            symbol_col = columns.get("symbol")
             company_col = (
-                normalized.get("company name")
-                or normalized.get("company")
-                or normalized.get("name")
+                columns.get("company name")
+                or columns.get("company")
+                or columns.get("name")
             )
 
             if symbol_col is None or company_col is None:
@@ -98,7 +78,7 @@ def get_nifty500_constituents():
 
             if len(result) < 400:
                 raise ValueError(
-                    f"Constituent file returned only {len(result)} rows."
+                    f"Only {len(result)} constituents returned."
                 )
 
             result["Yahoo Symbol"] = result["Symbol"] + ".NS"
@@ -108,13 +88,12 @@ def get_nifty500_constituents():
             errors.append(f"{url}: {exc}")
 
     raise RuntimeError(
-        "Unable to download the Nifty 500 constituent list.\n"
+        "Unable to download Nifty 500 constituents.\n"
         + "\n".join(errors)
     )
 
 
-def _normalize_download(data, tickers):
-    """Convert yfinance batch output into a single long-format DataFrame."""
+def normalize_download(data, tickers):
     frames = []
 
     if data is None or data.empty:
@@ -128,21 +107,25 @@ def _normalize_download(data, tickers):
                 continue
 
             frame = frame.dropna(how="all")
-            required = {"Close", "High", "Low"}
 
-            if not frame.empty and required.issubset(frame.columns):
+            if (
+                not frame.empty
+                and {"Close", "High", "Low"}.issubset(frame.columns)
+            ):
                 frame = frame.reset_index()
                 frame["Yahoo Symbol"] = ticker
                 frames.append(frame)
-    else:
-        if len(tickers) == 1:
-            frame = data.dropna(how="all").copy()
-            required = {"Close", "High", "Low"}
 
-            if not frame.empty and required.issubset(frame.columns):
-                frame = frame.reset_index()
-                frame["Yahoo Symbol"] = tickers[0]
-                frames.append(frame)
+    elif len(tickers) == 1:
+        frame = data.dropna(how="all").copy()
+
+        if (
+            not frame.empty
+            and {"Close", "High", "Low"}.issubset(frame.columns)
+        ):
+            frame = frame.reset_index()
+            frame["Yahoo Symbol"] = tickers[0]
+            frames.append(frame)
 
     if not frames:
         return pd.DataFrame()
@@ -155,36 +138,21 @@ def _normalize_download(data, tickers):
         utc=True,
     ).dt.tz_convert(None).dt.normalize()
 
-    numeric_columns = [
-        column
-        for column in ["Open", "High", "Low", "Close", "Volume"]
-        if column in result.columns
-    ]
-
-    for column in numeric_columns:
-        result[column] = pd.to_numeric(
-            result[column],
-            errors="coerce",
-        )
+    for column in ["Open", "High", "Low", "Close", "Volume"]:
+        if column in result.columns:
+            result[column] = pd.to_numeric(
+                result[column],
+                errors="coerce",
+            )
 
     return result.dropna(
         subset=["Date", "High", "Low", "Close"]
     ).reset_index(drop=True)
 
 
-@st.cache_data(
-    ttl=60 * 60 * 4,
-    show_spinner=False,
-)
+@st.cache_data(ttl=14400, show_spinner=False)
 def download_price_batch(tickers_tuple, start_date, end_date):
-    """
-    Download one batch with retries.
-
-    Cached by batch and date range, so reruns and other users can reuse
-    recent downloads while the Streamlit server remains active.
-    """
     tickers = list(tickers_tuple)
-    last_error = None
 
     for attempt in range(3):
         try:
@@ -200,17 +168,16 @@ def download_price_batch(tickers_tuple, start_date, end_date):
                 timeout=30,
             )
 
-            normalized = _normalize_download(data, tickers)
+            result = normalize_download(data, tickers)
 
-            if not normalized.empty:
-                return normalized
+            if not result.empty:
+                return result
 
-        except Exception as exc:
-            last_error = exc
+        except Exception:
+            pass
 
         time.sleep(1.5 * (attempt + 1))
 
-    # Return an empty DataFrame instead of killing the whole scan.
     return pd.DataFrame()
 
 
@@ -221,14 +188,12 @@ def download_all_prices(
     batch_size,
     progress_callback=None,
 ):
-    """
-    Download the Nifty 500 universe in manageable batches.
-
-    If a batch partially fails, individual missing tickers are retried.
-    """
     all_frames = []
     failures = []
-    total_batches = (len(tickers) + batch_size - 1) // batch_size
+
+    total_batches = (
+        len(tickers) + batch_size - 1
+    ) // batch_size
 
     for batch_number, start in enumerate(
         range(0, len(tickers), batch_size),
@@ -244,7 +209,6 @@ def download_all_prices(
 
         if not frame.empty:
             all_frames.append(frame)
-
             returned = set(frame["Yahoo Symbol"].unique())
             missing = [
                 ticker
@@ -254,8 +218,7 @@ def download_all_prices(
         else:
             missing = batch
 
-        # Retry missing tickers individually. This prevents one bad ticker
-        # from invalidating a whole batch.
+        # Retry missing tickers individually.
         for ticker in missing:
             retry = download_price_batch(
                 (ticker,),
@@ -275,7 +238,6 @@ def download_all_prices(
                 len(failures),
             )
 
-        # Gentle pause between uncached batch requests.
         time.sleep(0.25)
 
     if not all_frames:
@@ -294,34 +256,6 @@ def download_all_prices(
     return prices, sorted(set(failures))
 
 
-# ---------------------------------------------------------
-# Signal engine
-# ---------------------------------------------------------
-
-def classify_signal(
-    frame,
-    touch_mode,
-    tolerance_pct,
-):
-    frame = frame.copy()
-    frame["Previous Close"] = frame["Close"].shift(1)
-    frame["Previous EMA"] = frame["EMA"].shift(1)
-
-    if touch_mode == "Wick":
-        touches = (
-            frame["Low"].le(frame["EMA"])
-            & frame["High"].ge(frame["EMA"])
-        )
-    else:
-        distance = (
-            (frame["Close"] - frame["EMA"]).abs()
-            / frame["EMA"].abs()
-        )
-        touches = distance.le(tolerance_pct / 100)
-
-    return touches & frame["EMA"].notna()
-
-
 def scan_prices(
     universe,
     prices,
@@ -329,12 +263,21 @@ def scan_prices(
     touch_mode,
     tolerance_pct,
 ):
-    """
-    Calculate the EMA independently for each stock and retain only
-    its latest qualifying touch.
-    """
+    """Calculate EMA and retain the latest qualifying touch per stock."""
+
     if prices.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(
+            columns=[
+                "Rank",
+                "Symbol",
+                "Company",
+                "Signal Type",
+                "Occurrence Date",
+                "Close",
+                f"EMA {ema_period}",
+                "Distance from EMA %",
+            ]
+        )
 
     company_lookup = (
         universe
@@ -360,48 +303,59 @@ def scan_prices(
             continue
 
         frame["EMA"] = frame["Close"].ewm(
-    span=ema_period,
-    adjust=False,
-    min_periods=ema_period,
-).mean()
+            span=ema_period,
+            adjust=False,
+            min_periods=ema_period,
+        ).mean()
 
-# Previous values are required to determine whether
-# the stock touched the EMA from above or below.
-frame["Previous Close"] = frame["Close"].shift(1)
-frame["Previous EMA"] = frame["EMA"].shift(1)
+        # Keep previous values in THIS DataFrame.
+        frame["Previous Close"] = frame["Close"].shift(1)
+        frame["Previous EMA"] = frame["EMA"].shift(1)
 
-if touch_mode == "Wick":
-    touches = (
-        frame["Low"].le(frame["EMA"])
-        & frame["High"].ge(frame["EMA"])
-        & frame["EMA"].notna()
-    )
-else:
-    distance = (
-        (frame["Close"] - frame["EMA"]).abs()
-        / frame["EMA"].abs()
-    )
+        if touch_mode == "Wick":
+            touches = (
+                frame["Low"].le(frame["EMA"])
+                & frame["High"].ge(frame["EMA"])
+                & frame["EMA"].notna()
+            )
+        else:
+            distance = (
+                (frame["Close"] - frame["EMA"]).abs()
+                / frame["EMA"].abs()
+            )
 
-    touches = (
-        distance.le(tolerance_pct / 100)
-        & frame["EMA"].notna()
-    )
+            touches = (
+                distance.le(tolerance_pct / 100)
+                & frame["EMA"].notna()
+            )
 
-hits = frame.loc[touches]
+        hits = frame.loc[touches]
 
-if hits.empty:
-    continue
+        if hits.empty:
+            continue
 
-hit = hits.iloc[-1]
-previous_close = hit["Previous Close"]
-previous_ema = hit["Previous EMA"]
-        close_distance = abs(
-            float(hit["Close"]) - float(hit["EMA"])
-        ) / max(abs(float(hit["EMA"])), 1e-12)
+        hit = hits.iloc[-1]
+
+        previous_close = hit["Previous Close"]
+        previous_ema = hit["Previous EMA"]
+
+        close_distance = (
+            abs(
+                float(hit["Close"])
+                - float(hit["EMA"])
+            )
+            / max(
+                abs(float(hit["EMA"])),
+                1e-12,
+            )
+        )
 
         if close_distance <= 0.001:
             signal_type = "Close on EMA"
-        elif pd.notna(previous_close) and pd.notna(previous_ema):
+        elif (
+            pd.notna(previous_close)
+            and pd.notna(previous_ema)
+        ):
             if previous_close > previous_ema:
                 signal_type = "Touched from Above"
             elif previous_close < previous_ema:
@@ -439,7 +393,18 @@ previous_ema = hit["Previous EMA"]
         )
 
     if not results:
-        return pd.DataFrame()
+        return pd.DataFrame(
+            columns=[
+                "Rank",
+                "Symbol",
+                "Company",
+                "Signal Type",
+                "Occurrence Date",
+                "Close",
+                f"EMA {ema_period}",
+                "Distance from EMA %",
+            ]
+        )
 
     output = pd.DataFrame(results)
 
@@ -458,38 +423,23 @@ previous_ema = hit["Previous EMA"]
         range(1, len(output) + 1),
     )
 
-    numeric_columns = [
-        "Close",
-        f"EMA {ema_period}",
-        "Distance from EMA %",
-    ]
+    output["Close"] = output["Close"].round(2)
+    output[f"EMA {ema_period}"] = (
+        output[f"EMA {ema_period}"].round(2)
+    )
+    output["Distance from EMA %"] = (
+        output["Distance from EMA %"].round(2)
+    )
 
-    for column in numeric_columns:
-        output[column] = output[column].round(2)
-
-    output["Occurrence Date"] = output[
-        "Occurrence Date"
-    ].dt.strftime("%Y-%m-%d")
+    output["Occurrence Date"] = (
+        output["Occurrence Date"]
+        .dt.strftime("%Y-%m-%d")
+    )
 
     return output
 
 
-# ---------------------------------------------------------
-# UI helpers
-# ---------------------------------------------------------
-
-def show_scan_progress(batch, total, failures):
-    progress = batch / total
-    st.session_state["_download_progress"] = progress
-    st.session_state["_download_text"] = (
-        f"Downloading batch {batch} of {total}"
-        f" · unresolved tickers: {failures}"
-    )
-
-
-# ---------------------------------------------------------
-# UI
-# ---------------------------------------------------------
+# ---------------- UI ----------------
 
 st.title("Nifty 500 EMA Scanner")
 st.caption(
@@ -512,15 +462,11 @@ with st.sidebar:
         min_value=2,
         max_value=8,
         value=4,
-        help=(
-            "More history provides additional context but also increases "
-            "the initial download size."
-        ),
     )
 
     touch_label = st.radio(
         "Signal definition",
-        options=[
+        [
             "Wick touches EMA",
             "Close near EMA",
         ],
@@ -532,17 +478,15 @@ with st.sidebar:
         max_value=5.0,
         value=0.50,
         step=0.05,
-        disabled=(touch_label == "Wick touches EMA"),
+        disabled=(
+            touch_label == "Wick touches EMA"
+        ),
     )
 
     batch_size = st.select_slider(
         "Download batch size",
         options=[25, 50, 75, 100],
         value=50,
-        help=(
-            "Smaller batches are slower but can be more resilient if a "
-            "provider request fails."
-        ),
     )
 
     st.divider()
@@ -564,11 +508,6 @@ with st.sidebar:
 
 if run_scan:
     try:
-        st.session_state["_download_progress"] = 0.0
-        st.session_state["_download_text"] = (
-            "Preparing Nifty 500 universe..."
-        )
-
         progress_bar = st.progress(0.0)
         status = st.empty()
 
@@ -591,8 +530,7 @@ if run_scan:
         )
 
         def update_progress(batch, total, failures):
-            progress = batch / total
-            progress_bar.progress(progress)
+            progress_bar.progress(batch / total)
             status.info(
                 f"Downloading batch {batch}/{total} "
                 f"· unresolved tickers: {failures}"
@@ -614,8 +552,10 @@ if run_scan:
             st.stop()
 
         progress_bar.progress(1.0)
+
         status.info(
-            f"Downloaded {prices['Yahoo Symbol'].nunique():,} stocks. "
+            f"Downloaded "
+            f"{prices['Yahoo Symbol'].nunique():,} stocks. "
             "Calculating EMA signals..."
         )
 
@@ -626,7 +566,7 @@ if run_scan:
         )
 
         with st.spinner(
-            f"Calculating EMA {ema_period} and detecting signals..."
+            f"Calculating EMA {ema_period}..."
         ):
             signals = scan_prices(
                 universe=universe,
@@ -675,8 +615,8 @@ meta = st.session_state["scan_meta"]
 
 if meta["failures"]:
     st.warning(
-        f"{len(meta['failures'])} ticker(s) could not be downloaded "
-        "after retries. The remaining universe was scanned normally."
+        f"{len(meta['failures'])} ticker(s) could not be "
+        "downloaded after retries."
     )
 
 with st.expander("Scan details"):
@@ -688,26 +628,19 @@ with st.expander("Scan details"):
             "Failed tickers": len(meta["failures"]),
             "EMA period": current_ema,
             "Signal definition": meta["touch_label"],
-            "History downloaded": f"{meta['history_years']} years",
+            "History downloaded": (
+                f"{meta['history_years']} years"
+            ),
         }
     )
 
 metric_1, metric_2, metric_3 = st.columns(3)
 
-metric_1.metric(
-    "Signals found",
-    f"{len(signals):,}",
-)
+metric_1.metric("Signals found", f"{len(signals):,}")
 
 if signals.empty:
-    metric_2.metric(
-        "Most recent signal",
-        "None",
-    )
-    metric_3.metric(
-        "Signals in last 7 days",
-        "0",
-    )
+    metric_2.metric("Most recent signal", "None")
+    metric_3.metric("Signals in last 7 days", "0")
 else:
     metric_2.metric(
         "Most recent signal",
@@ -742,26 +675,11 @@ with filter_col_1:
     )
 
 with filter_col_2:
-    if signals.empty:
-        max_age = 365
-    else:
-        max_age = max(
-            1,
-            int(
-                (
-                    pd.Timestamp.today().normalize()
-                    - pd.to_datetime(
-                        signals["Occurrence Date"]
-                    ).min()
-                ).days
-            ),
-        )
-
     max_days = st.number_input(
         "Only signals from last N days",
         min_value=1,
-        max_value=max(3650, max_age),
-        value=min(30, max(3650, max_age)),
+        max_value=3650,
+        value=30,
         step=1,
     )
 
@@ -796,7 +714,8 @@ if search:
     filtered = filtered.loc[mask]
 
 st.caption(
-    f"Showing {len(filtered):,} of {len(signals):,} detected signals."
+    f"Showing {len(filtered):,} "
+    f"of {len(signals):,} detected signals."
 )
 
 st.dataframe(
@@ -804,24 +723,6 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     height=600,
-    column_config={
-        "Rank": st.column_config.NumberColumn(
-            "Rank",
-            format="%d",
-        ),
-        "Close": st.column_config.NumberColumn(
-            "Close",
-            format="%.2f",
-        ),
-        f"EMA {current_ema}": st.column_config.NumberColumn(
-            f"EMA {current_ema}",
-            format="%.2f",
-        ),
-        "Distance from EMA %": st.column_config.NumberColumn(
-            "Distance from EMA %",
-            format="%.2f%%",
-        ),
-    },
 )
 
 csv = signals.to_csv(index=False).encode("utf-8")
@@ -831,15 +732,12 @@ st.download_button(
     data=csv,
     file_name="nifty500_ema_signals.csv",
     mime="text/csv",
-    use_container_width=False,
 )
 
 if meta["failures"]:
     failed_csv = (
         pd.DataFrame(
-            {
-                "Yahoo Symbol": meta["failures"],
-            }
+            {"Yahoo Symbol": meta["failures"]}
         )
         .to_csv(index=False)
         .encode("utf-8")
@@ -857,16 +755,13 @@ with st.expander("Signal methodology"):
         f"""
 **Universe:** Current Nifty 500 constituents.
 
-**EMA:** Exponential Moving Average using **{current_ema}** daily closing prices.
+**EMA:** EMA calculated using **{current_ema}** daily closing prices.
 
 **Wick touch:** `Low ≤ EMA ≤ High`
 
-**Close near EMA:** `|Close - EMA| / EMA ≤ selected tolerance`
+**Close near EMA:** Close is within the selected percentage tolerance.
 
 Only the **latest qualifying occurrence for each stock** is retained.
 Results are ranked by occurrence date, newest first.
-
-The app uses public market data through `yfinance`. Data availability can vary,
-and a small number of tickers may occasionally fail or return incomplete history.
 """
     )
