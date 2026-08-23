@@ -4,9 +4,10 @@ from __future__ import annotations
 import io
 import time
 import random
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Callable
-import re
+
 import pandas as pd
 import requests
 import yfinance as yf
@@ -197,7 +198,7 @@ def _normalize_yfinance(data: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=4 * 60 * 60, show_spinner=False)
+@st.cache_data(ttl=12 * 60 * 60, show_spinner=False)
 def download_price_batch(
     tickers: tuple[str, ...],
     start_date: str,
@@ -240,7 +241,13 @@ def download_prices(
     batch_size: int = 75,
     progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
-    end = date.today() + timedelta(days=1)
+    # The scanner is intentionally end-of-day, not intraday. The current IST
+    # session is excluded because Yahoo's daily candle can change while the
+    # market is open or while providers finalize the session.
+    #
+    # yfinance's end date is exclusive, so using today's IST date keeps the
+    # latest completed trading session as the common scan endpoint.
+    end = datetime.now(ZoneInfo("Asia/Kolkata")).date()
     start = end - timedelta(days=int(years * 365.25))
 
     tickers = universe["Yahoo Symbol"].tolist()
@@ -301,14 +308,45 @@ def download_prices(
         .reset_index(drop=True)
     )
 
+    # A scan must use one common completed market date. Otherwise a partially
+    # returned symbol can be ranked using yesterday while other symbols use the
+    # latest session, causing unstable RSI/RS percentiles and setup changes.
+    as_of_date = prices["Date"].max()
+    latest_by_symbol = prices.groupby("Yahoo Symbol")["Date"].max()
+    stale_symbols = latest_by_symbol[latest_by_symbol != as_of_date].index.tolist()
+    if stale_symbols:
+        failures.extend(stale_symbols)
+        prices = prices.loc[
+            ~prices["Yahoo Symbol"].isin(stale_symbols)
+        ].copy()
+
     # A symbol with only a handful of rows is not a valid substitute for a
     # complete download. Keep it in failures so the scan can report coverage.
     row_counts = prices.groupby("Yahoo Symbol")["Date"].nunique()
     min_required = min(260, max(60, int(years * 252 * 0.5)))
     short_history = row_counts[row_counts < min_required].index.tolist()
     failures.extend(short_history)
+    if short_history:
+        prices = prices.loc[
+            ~prices["Yahoo Symbol"].isin(short_history)
+        ].copy()
 
-    return prices, sorted(set(failures))
+    failures = sorted(set(failures))
+
+    # Do not silently publish a materially incomplete universe. A partial
+    # universe changes cross-sectional relative-strength percentiles and can
+    # therefore change the candidate list even when market prices did not.
+    expected = len(tickers)
+    returned = prices["Yahoo Symbol"].nunique()
+    coverage = returned / max(expected, 1)
+    if coverage < 0.97:
+        raise RuntimeError(
+            f"Market-data coverage too low: {returned}/{expected} "
+            f"({coverage:.1%}). Scan was discarded rather than producing "
+            "a potentially unstable ranking. Please rerun later."
+        )
+
+    return prices, failures
 
 
 def rsi_wilder(close: pd.Series, period: int = 14) -> pd.Series:
@@ -594,6 +632,29 @@ def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
         else pd.Series(float("nan"), index=df.index)
     )
 
+    # Baseline fields are retained for compatibility with existing pages.
+    df["RegimeScore"] = df["BullRegime"].astype(int) * 25
+    df["MomentumScore"] = (
+        df["BullMomentum"].astype(int) * 20
+        + df["MomentumFresh"].astype(int) * 5
+    )
+    df["SwingScore"] = (
+        df["BullSwing"].astype(int) * 20
+        + df["SwingFresh"].astype(int) * 5
+    )
+    near_ema = pd.to_numeric(
+        df.get("EMA255DistancePct"), errors="coerce"
+    ).abs() <= 2
+    df["EntryScore"] = (
+        near_ema.astype(int) * 15
+        + ((rsi >= 35) & (rsi <= 60)).astype(int) * 10
+    )
+    df["TrendScore"] = (
+        df["RegimeScore"]
+        + df["MomentumScore"]
+        + df["SwingScore"]
+    )
+
     strong_trend = (
         df["BullRegime"]
         & df["BullSwing"]
@@ -728,177 +789,6 @@ def convergence_table(snapshot: pd.DataFrame) -> pd.DataFrame:
         ascending=False,
         na_position="last",
     ).reset_index(drop=True)
-
-def investor_quality_gate(convergence: pd.DataFrame) -> pd.DataFrame:
-    """
-    Apply a stricter retail-investor quality gate to Confluence candidates.
-
-    This is a second-stage filter. Confluence remains intentionally broader.
-    No fixed number of stocks is selected.
-
-    The gate is setup-aware:
-      - Trend Continuation already has its strict path-specific rules.
-      - Fresh Momentum requires broader trend support, healthy RSI and participation.
-      - Breakout requires a true breakout, volume and relative strength.
-      - Pullback requires the existing EMA255/RSI trigger plus bullish structure.
-
-    Returns candidates ranked by InvestorTechnicalScore.
-    """
-    if convergence.empty:
-        return pd.DataFrame()
-
-    df = convergence.copy()
-
-    def num(col, default=0.0):
-        return pd.to_numeric(
-            df.get(col, pd.Series(default, index=df.index)),
-            errors="coerce",
-        )
-
-    def flag(col):
-        return df.get(
-            col,
-            pd.Series(False, index=df.index),
-        ).fillna(False).astype(bool)
-
-    rs3 = num("RS3MPct")
-    rs6 = num("RS6MPct")
-    volume = num("VolumeRatio")
-    atr = num("ATRPercent")
-    gap = num("GapPct")
-    rsi = num("RSI14")
-
-    history = df.get(
-        "HistoryEligible",
-        pd.Series(False, index=df.index),
-    ).fillna(False).astype(bool)
-
-    active = (
-        df.get("Setup", pd.Series("No active setup", index=df.index)).astype(str).ne("No active setup")
-        & (num("ConvergenceScore") >= 70)
-        & history
-    )
-
-    common_quality = (
-        (rs3 >= 75)
-        & (atr <= 6)
-        & (gap.abs() <= 5)
-    )
-
-    setup = df.get(
-        "Setup",
-        pd.Series("No active setup", index=df.index),
-    ).astype(str)
-
-    # Setup-specific quality gates.
-    trend_ok = (
-        (setup == "Trend Continuation")
-        & flag("BullRegime")
-        & flag("BullSwing")
-        & flag("BullMomentum")
-        & (rs3 >= 85)
-        & (volume >= 1.5)
-        & rsi.between(55, 75, inclusive="both")
-    )
-
-    momentum_ok = (
-        (setup == "Fresh Momentum")
-        & flag("MomentumFresh")
-        & flag("BullMomentum")
-        & (flag("BullRegime") | flag("BullSwing"))
-        & (rs3 >= 75)
-        & (volume >= 1.0)
-        & rsi.between(50, 75, inclusive="both")
-    )
-
-    breakout_ok = (
-        (setup == "Volume Breakout")
-        & flag("Breakout20")
-        & flag("BullRegime")
-        & (rs3 >= 75)
-        & (volume >= 1.5)
-        & rsi.between(50, 80, inclusive="both")
-    )
-
-    pullback_ok = (
-        (setup == "Pullback in Bull Regime")
-        & flag("Pullback")
-        & flag("BullRegime")
-        & flag("BullSwing")
-        & (rs3 >= 70)
-        & rsi.lt(35)
-        & (num("EMA255DistancePct").abs() <= 2)
-    )
-
-    candidate = active & common_quality & (
-        trend_ok | momentum_ok | breakout_ok | pullback_ok
-    )
-
-    # Quality score is for ranking valid candidates, not creating signals.
-    setup_component = num("ConvergenceScore").clip(0, 100) * 0.35
-    rs_component = rs3.clip(0, 100) * 0.20
-    rs6_component = rs6.clip(0, 100) * 0.10
-    volume_component = (
-        volume.clip(lower=0, upper=2.5) / 2.5
-    ) * 10
-
-    trend_component = (
-        (
-            flag("BullRegime").astype(int)
-            + flag("BullSwing").astype(int)
-            + flag("BullMomentum").astype(int)
-        ) / 3
-    ) * 10
-
-    # Entry quality rewards a useful RSI zone without forcing every setup
-    # into the same RSI behavior.
-    entry_component = pd.Series(0.0, index=df.index)
-    entry_component = entry_component.mask(
-        setup.eq("Fresh Momentum"),
-        rsi.between(50, 75, inclusive="both").astype(int) * 10,
-    )
-    entry_component = entry_component.mask(
-        setup.eq("Volume Breakout"),
-        rsi.between(50, 80, inclusive="both").astype(int) * 10,
-    )
-    entry_component = entry_component.mask(
-        setup.eq("Trend Continuation"),
-        rsi.between(55, 75, inclusive="both").astype(int) * 10,
-    )
-    entry_component = entry_component.mask(
-        setup.eq("Pullback in Bull Regime"),
-        rsi.lt(35).astype(int) * 10,
-    )
-
-    risk_component = (
-        (atr <= 4).astype(int) * 3
-        + ((atr > 4) & (atr <= 6)).astype(int) * 2
-        + (gap.abs() <= 2).astype(int) * 2
-    )
-
-    df["InvestorTechnicalScore"] = (
-        setup_component
-        + rs_component
-        + rs6_component
-        + volume_component
-        + trend_component
-        + entry_component
-        + risk_component
-    ).round(1)
-
-    df["InvestorQualityPass"] = candidate
-    df.loc[~candidate, "InvestorTechnicalScore"] = 0.0
-
-    return (
-        df.loc[candidate]
-        .sort_values(
-            ["InvestorTechnicalScore", "ConvergenceScore", "RS3MPct"],
-            ascending=False,
-            na_position="last",
-        )
-        .reset_index(drop=True)
-    )
-
 
 def fundamental_snapshot(ticker: str) -> dict:
     """Fetch six late-stage fundamental context fields only for finalists."""
