@@ -14,6 +14,15 @@ from google import genai
 from google.genai import types
 from plotly.subplots import make_subplots
 
+# -------------------------------------------------------------------
+# AI strategy constants. Defined before any shared strategy helpers use them.
+# -------------------------------------------------------------------
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+AI_STRATEGY_PREFILTER_SCORE = 75
+AI_DEFAULT_FINAL_BUY_CONVICTION = 78
+AI_DEFAULT_FINAL_BUY_LIQUIDITY = True
+AI_FUNDAMENTAL_FETCH_LIMIT = 25
+
 from engine import (
     add_days_since_cross,
     calculate_indicators,
@@ -937,8 +946,8 @@ def _fundamental_for_scan(namespace, yahoo_symbol):
     return cache[key]
 
 
-def build_ai_confluence_pool(convergence=None):
-    """Canonical AI Confluence pool. 75+ and an active setup only."""
+def build_ai_confluence_pool(convergence=None, min_score=AI_STRATEGY_PREFILTER_SCORE):
+    """Canonical AI Confluence pool using an explicit score threshold and active setups only."""
     if convergence is None:
         convergence = st.session_state.get("convergence")
     if not isinstance(convergence, pd.DataFrame) or convergence.empty:
@@ -946,7 +955,7 @@ def build_ai_confluence_pool(convergence=None):
     score = pd.to_numeric(convergence.get("ConvergenceScore"), errors="coerce")
     setup = convergence.get("Setup", pd.Series("No active setup", index=convergence.index))
     return convergence.loc[
-        (score >= AI_STRATEGY_PREFILTER_SCORE)
+        (score >= float(min_score))
         & setup.astype(str).ne("No active setup")
     ].copy().reset_index(drop=True)
 
@@ -965,7 +974,7 @@ def build_final_buy_list(
 
     source = convergence.copy()
     if prefilter_score is not None:
-        source = build_ai_confluence_pool(source)
+        source = build_ai_confluence_pool(source, min_score=prefilter_score)
 
     technical = investor_quality_gate(source)
     if use_liquidity and not technical.empty:
@@ -1640,13 +1649,7 @@ normal scanner and be evaluated by the full Confluence and Final Buy List logic.
 # This section does not modify engine.py, scores, or scanner state.
 # -------------------------------------------------------------------
 
-GEMINI_MODEL = "gemini-3.5-flash-lite"
-
-# AI verification prefilter. This does not change the visible strategy rules.
-AI_STRATEGY_PREFILTER_SCORE = 75
-AI_DEFAULT_FINAL_BUY_CONVICTION = 78
-AI_DEFAULT_FINAL_BUY_LIQUIDITY = True
-AI_FUNDAMENTAL_FETCH_LIMIT = 25
+# Constants are defined near the imports because shared strategy helpers use them earlier in the file.
 
 
 def _ai_chart_png(frame, symbol):
