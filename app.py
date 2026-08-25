@@ -30,10 +30,10 @@ AI_FUNDAMENTAL_FETCH_LIMIT = 25
 # One file is reused for the sidebar, page branding and AI chat avatar.
 # -------------------------------------------------------------------
 # Branding assets. These filenames match the root-level files in the GitHub repository.
-APP_LOGO_PATH = Path("nifty_market_terminal_logo.png")
-APP_AVATAR_PATH = Path("nifty_market_terminal_avatar.png")
-APP_WORDMARK_PATH = Path("nifty_market_terminal_wordmark.png")
-APP_FAVICON_PATH = Path("nifty_favicon.png")
+APP_LOGO_PATH = Path("assets/nifty_market_terminal_logo.png")
+APP_AVATAR_PATH = Path("assets/nifty_market_terminal_avatar.png")
+APP_WORDMARK_PATH = Path("assets/nifty_market_terminal_wordmark.png")
+APP_FAVICON_PATH = Path("assets/nifty_favicon.png")
 
 APP_LOGO_FALLBACK = "📈"
 AI_AVATAR_FALLBACK = "🤖"
