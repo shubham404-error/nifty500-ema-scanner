@@ -2321,7 +2321,7 @@ FINAL_ACTION: <one of the allowed actions>
 
 
 def _render_list_ai_terminal(list_name, frame, key_prefix):
-    """Reusable AI research terminal for Confluence and Final Buy List."""
+    """Reusable AI research terminal with chat and single-answer modes."""
     st.divider()
     st.subheader(f"AI Investment Committee. {list_name}")
 
@@ -2336,9 +2336,22 @@ def _render_list_ai_terminal(list_name, frame, key_prefix):
         "entry timing, confirmation, risk/reward and available fundamentals."
     )
 
-    history_key = f"ai_list_chat::{key_prefix}::{_current_scan_id()}"
+    scan_id = _current_scan_id()
+    history_key = f"ai_list_chat::{key_prefix}::{scan_id}"
+    latest_key = f"ai_list_latest::{key_prefix}::{scan_id}"
+    mode_key = f"{key_prefix}::display_mode"
+
     if history_key not in st.session_state:
         st.session_state[history_key] = []
+
+    st.radio(
+        "AI response view",
+        options=["ONE ANSWER AT A TIME", "CHAT WINDOW"],
+        key=mode_key,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    answer_mode = st.session_state[mode_key]
 
     quick_cols = st.columns([1, 1, 1])
     with quick_cols[0]:
@@ -2378,48 +2391,112 @@ def _render_list_ai_terminal(list_name, frame, key_prefix):
             "which need a pullback, which need a breakout confirmation, and which should simply be monitored."
         )
 
-    for message in st.session_state[history_key]:
-        with st.chat_message(
-            message["role"],
-            avatar=_ai_avatar_source() if message["role"] == "assistant" else None,
-        ):
-            display, action = _split_ai_action(message["content"])
-            if action:
-                _render_ai_action(action)
-            st.markdown(display)
+    if answer_mode == "CHAT WINDOW":
+        clear_col, _ = st.columns([1, 4])
+        with clear_col:
+            if st.button("CLEAR CHAT", key=f"{key_prefix}::clear_chat"):
+                st.session_state[history_key] = []
+                st.rerun()
 
-    typed = st.chat_input(
-        f"Ask AI to compare the current {list_name} candidates...",
-        key=f"{key_prefix}::chat_input",
-    )
-    prompt = quick_prompt or typed
+        for message in st.session_state[history_key]:
+            with st.chat_message(
+                message["role"],
+                avatar=_ai_avatar_source() if message["role"] == "assistant" else None,
+            ):
+                display, action = _split_ai_action(message["content"])
+                if action:
+                    _render_ai_action(action)
+                st.markdown(display)
 
-    if prompt:
-        st.session_state[history_key].append({"role": "user", "content": prompt})
-        st.session_state[history_key] = st.session_state[history_key][-20:]
+        typed = st.chat_input(
+            f"Ask AI to compare the current {list_name} candidates...",
+            key=f"{key_prefix}::chat_input",
+        )
+        prompt = quick_prompt or typed
 
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        if prompt:
+            st.session_state[history_key].append({"role": "user", "content": prompt})
+            st.session_state[history_key] = st.session_state[history_key][-20:]
 
-        with st.chat_message("assistant", avatar=_ai_avatar_source()):
-            with st.spinner("AI is comparing the current candidates..."):
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant", avatar=_ai_avatar_source()):
+                with st.spinner("AI is comparing the current candidates..."):
+                    try:
+                        answer = _gemini_list_reply(
+                            prompt,
+                            frame,
+                            list_name,
+                            st.session_state[history_key][:-1],
+                        )
+                        display, action = _split_ai_action(answer)
+                        if action:
+                            _render_ai_action(action)
+                        st.markdown(display)
+                        st.session_state[history_key].append(
+                            {"role": "assistant", "content": answer}
+                        )
+                        st.session_state[history_key] = st.session_state[history_key][-20:]
+                    except Exception as exc:
+                        st.error(f"AI review failed: {exc}")
+
+    else:
+        st.caption(
+            "Each new request replaces the previous AI result. "
+            "Use Chat Window when you want follow-up conversation."
+        )
+
+        question_col, send_col, clear_col = st.columns([6, 1.2, 1.2])
+        with question_col:
+            typed = st.text_input(
+                f"Ask about the current {list_name} candidates...",
+                key=f"{key_prefix}::single_question",
+                placeholder="Example: Which setup has the best risk-reward right now?",
+            )
+        with send_col:
+            send_clicked = st.button(
+                "ANALYSE",
+                key=f"{key_prefix}::single_send",
+                use_container_width=True,
+            )
+        with clear_col:
+            if st.button(
+                "CLEAR",
+                key=f"{key_prefix}::single_clear",
+                use_container_width=True,
+            ):
+                st.session_state.pop(latest_key, None)
+                st.rerun()
+
+        prompt = quick_prompt or (typed.strip() if send_clicked and typed else None)
+
+        if prompt:
+            with st.spinner("AI is reviewing the current candidates..."):
                 try:
+                    # Single-answer mode is intentionally stateless. Each request gets a
+                    # fresh review so the visible page stays compact and easy to replace.
                     answer = _gemini_list_reply(
                         prompt,
                         frame,
                         list_name,
-                        st.session_state[history_key][:-1],
+                        [],
                     )
-                    display, action = _split_ai_action(answer)
-                    if action:
-                        _render_ai_action(action)
-                    st.markdown(display)
-                    st.session_state[history_key].append(
-                        {"role": "assistant", "content": answer}
-                    )
-                    st.session_state[history_key] = st.session_state[history_key][-20:]
+                    st.session_state[latest_key] = {
+                        "question": prompt,
+                        "answer": answer,
+                    }
                 except Exception as exc:
                     st.error(f"AI review failed: {exc}")
+
+        latest = st.session_state.get(latest_key)
+        if latest:
+            st.markdown("#### Latest AI Review")
+            st.caption(f"Question: {latest['question']}")
+            display, action = _split_ai_action(latest["answer"])
+            if action:
+                _render_ai_action(action)
+            st.markdown(display)
 
     remaining = AI_SESSION_CALL_LIMIT - int(st.session_state.get("ai_call_count", 0))
     st.caption(
