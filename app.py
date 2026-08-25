@@ -24,6 +24,20 @@ AI_STRATEGY_PREFILTER_SCORE = 75
 AI_DEFAULT_FINAL_BUY_CONVICTION = 78
 AI_DEFAULT_FINAL_BUY_LIQUIDITY = True
 AI_FUNDAMENTAL_FETCH_LIMIT = 25
+AI_LIST_REVIEW_LIMIT = 20
+AI_LIST_TOP_N = 3
+AI_SESSION_CALL_LIMIT = 25
+
+AI_ACTIONS = (
+    "STRONG BUY",
+    "BUY",
+    "ACCUMULATE",
+    "HOLD / MONITOR",
+    "WAIT FOR PULLBACK",
+    "WAIT FOR BREAKOUT",
+    "AVOID FOR NOW",
+    "SELL / EXIT",
+)
 
 # -------------------------------------------------------------------
 # Branding asset. The generated logo will be added here later.
@@ -52,7 +66,7 @@ from engine import (
 
 st.set_page_config(
     page_title="Nifty Market Terminal",
-    page_icon="📈",
+    page_icon=str(APP_FAVICON_PATH) if APP_FAVICON_PATH.is_file() else "📈",
     layout="wide",
     initial_sidebar_state="auto",
 )
@@ -987,6 +1001,12 @@ def convergence_page():
     st.dataframe(output,use_container_width=True,hide_index=True,height=560)
     st.download_button("EXPORT CONFLUENCE CSV",data=output.to_csv(index=False).encode(),file_name="nifty_total_market_confluence.csv",mime="text/csv")
 
+    _render_list_ai_terminal(
+        "Confluence",
+        output,
+        "confluence_ai_terminal",
+    )
+
     st.markdown('<div class="section-kicker">Confluence chart</div>',unsafe_allow_html=True)
     if st.toggle("SHOW CONVERGENCE CHART",value=True,key="chart_toggle_convergence") and not output.empty:
         selected=st.selectbox("Select stock",output["Symbol"].tolist(),key="chart_stock_convergence")
@@ -1350,6 +1370,12 @@ def buying_list_page():
         data=export.to_csv(index=False).encode(),
         file_name="nifty_total_market_buying_list.csv",
         mime="text/csv",
+    )
+
+    _render_list_ai_terminal(
+        "Final Buy List",
+        final,
+        "final_buy_ai_terminal",
     )
 
     st.divider()
@@ -2082,10 +2108,289 @@ def _ai_question_needs_chart(question):
     return not _ai_question_is_clearly_fundamental_only(question)
 
 
+
+def _ai_consume_call():
+    """Hard per-session guard for the free-tier AI integration."""
+    count = int(st.session_state.get("ai_call_count", 0))
+    if count >= AI_SESSION_CALL_LIMIT:
+        raise RuntimeError(
+            f"AI session limit reached ({AI_SESSION_CALL_LIMIT} calls). "
+            "Start a new session or try again later."
+        )
+    st.session_state["ai_call_count"] = count + 1
+    return AI_SESSION_CALL_LIMIT - count - 1
+
+
+def _extract_ai_action(answer):
+    """Read the model's explicit final action without inventing one."""
+    if not isinstance(answer, str):
+        return None
+    upper = answer.upper()
+    for action in AI_ACTIONS:
+        pattern = rf'(?:FINAL[_\s-]*ACTION|AI[_\s-]*ACTION|ACTION)\s*:\s*{re.escape(action)}\b'
+        if re.search(pattern, upper):
+            return action
+    return None
+
+
+def _split_ai_action(answer):
+    """Return display text and the explicit model action separately."""
+    action = _extract_ai_action(answer)
+    if not action:
+        return answer, None
+    cleaned = re.sub(
+        r'\n*(?:FINAL[_\s-]*ACTION|AI[_\s-]*ACTION|ACTION)\s*:\s*'
+        + re.escape(action)
+        + r'\s*',
+        '\n',
+        answer,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned, action
+
+
+def _render_ai_action(action):
+    if not action:
+        return
+    label = f"AI FINAL ACTION: {action}"
+    if action in {"STRONG BUY", "BUY", "ACCUMULATE"}:
+        st.success(label)
+    elif action in {"WAIT FOR PULLBACK", "WAIT FOR BREAKOUT", "HOLD / MONITOR"}:
+        st.warning(label)
+    else:
+        st.error(label)
+
+
+def _list_ai_packet(frame, list_name):
+    """Compact, bounded candidate packet for a single AI ranking call."""
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return []
+
+    work = frame.copy()
+    if "Rank" not in work.columns:
+        work = work.reset_index(drop=True)
+        work.insert(0, "Rank", range(1, len(work) + 1))
+
+    preferred = [
+        "Rank", "Symbol", "Company", "Setup", "Close",
+        "ConvergenceScore", "Confluence", "Investor Conviction",
+        "Technical Quality", "RS 3M %ile", "RS 6M %ile",
+        "RS3MPct", "RS6MPct", "Volume x", "VolumeRatio",
+        "Liquidity", "LiquidityBucket", "RSI", "RSI14",
+        "ATR %", "ATRPercent", "Gap %", "GapPct",
+        "TrendContinuationScore", "PullbackScore",
+        "FreshMomentumScore", "BreakoutScore",
+        "P/E", "Revenue Growth %", "Net Profit Margin %",
+        "Debt/Equity", "EV/EBITDA", "Market Cap",
+    ]
+    cols = [c for c in preferred if c in work.columns]
+    work = work.loc[:, cols].head(AI_LIST_REVIEW_LIMIT)
+
+    records = []
+    for _, row in work.iterrows():
+        record = {}
+        for col, value in row.items():
+            converted = _ai_json_value(value)
+            if converted is not None:
+                record[col] = converted
+        records.append(record)
+    return records
+
+
+def _gemini_list_reply(question, frame, list_name, history):
+    """AI second-stage review of candidates already selected by deterministic rules."""
+    api_key = st.secrets.get("GEMINI_API_KEY", None)
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is missing. Add it in Streamlit Secrets.")
+
+    candidates = _list_ai_packet(frame, list_name)
+    if not candidates:
+        raise RuntimeError(f"No usable candidates are available for AI review in {list_name}.")
+
+    _ai_consume_call()
+
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=30000),
+    )
+
+    instruction = f"""
+You are the second-stage investment research analyst for Nifty Market Terminal.
+
+The deterministic scanner has already placed these stocks in the {list_name}.
+Your job is NOT to repeat the scanner or assume every listed stock deserves an immediate buy.
+
+Act as a disciplined investment committee:
+1. Compare candidates against each other.
+2. Penalize poor entry timing, excessive extension, weak risk/reward, deteriorating momentum,
+   low-quality confirmation, contradictory metrics, and material data gaps.
+3. Distinguish a strong setup from a strong setup at a bad entry price.
+4. Do not invent news, earnings, targets, support levels, or facts not present in the packet.
+5. Fundamentals are only available when included in the supplied candidate data.
+6. Never remove a stock from the application's rules-based list. You are adding a second opinion.
+
+For every candidate you discuss, assign exactly one action from:
+{", ".join(AI_ACTIONS)}
+
+When asked for the best opportunities, rank at most {AI_LIST_TOP_N} names.
+A Top 3 ranking means "best risk-adjusted setups from this supplied list right now", not a
+guarantee and not personalised financial advice.
+
+Use plain English for a retail investor. Be decisive, but explain uncertainty.
+
+End every response with exactly one line in this format when the response has an overall list-level
+recommendation:
+FINAL_ACTION: <one of the allowed actions>
+"""
+
+    payload = {
+        "list_name": list_name,
+        "candidate_count_shown_to_ai": len(candidates),
+        "candidates": candidates,
+        "question": question,
+        "recent_conversation": [
+            {"role": item["role"], "content": item["content"]}
+            for item in history[-6:]
+        ],
+    }
+
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                types.Part.from_text(text=instruction),
+                types.Part.from_text(
+                    text="Candidate packet:\n"
+                    + json.dumps(payload, default=str, ensure_ascii=False)
+                ),
+            ],
+        )
+    except Exception as exc:
+        details = str(exc)
+        if "429" in details or "quota" in details.lower() or "rate" in details.lower():
+            raise RuntimeError("Gemini free-tier quota or rate limit reached. Try again later.") from exc
+        raise RuntimeError(f"Gemini list review failed: {details}") from exc
+
+    answer = getattr(response, "text", None)
+    if not answer:
+        raise RuntimeError("Gemini returned no usable list review.")
+    return answer
+
+
+def _render_list_ai_terminal(list_name, frame, key_prefix):
+    """Reusable AI research terminal for Confluence and Final Buy List."""
+    st.divider()
+    st.subheader(f"AI Investment Committee. {list_name}")
+
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        st.info("No candidates are available for AI review.")
+        return
+
+    shown = min(len(frame), AI_LIST_REVIEW_LIMIT)
+    st.caption(
+        f"AI reviews the top {shown} candidates currently visible on this list. "
+        "The rules-based list remains unchanged. AI ranks and deprioritises setups based on "
+        "entry timing, confirmation, risk/reward and available fundamentals."
+    )
+
+    history_key = f"ai_list_chat::{key_prefix}::{_current_scan_id()}"
+    if history_key not in st.session_state:
+        st.session_state[history_key] = []
+
+    quick_cols = st.columns([1, 1, 1])
+    with quick_cols[0]:
+        top3_clicked = st.button(
+            "AI TOP 3 NOW",
+            key=f"{key_prefix}::top3",
+            use_container_width=True,
+        )
+    with quick_cols[1]:
+        risk_clicked = st.button(
+            "WEAKEST SIGNALS",
+            key=f"{key_prefix}::weak",
+            use_container_width=True,
+        )
+    with quick_cols[2]:
+        entry_clicked = st.button(
+            "BEST ENTRY CONDITIONS",
+            key=f"{key_prefix}::entry",
+            use_container_width=True,
+        )
+
+    quick_prompt = None
+    if top3_clicked:
+        quick_prompt = (
+            "Rank the best 3 opportunities from this list right now. For each, give the action, "
+            "why it ranks here, the biggest risk, and what would make the setup better or invalidate the case. "
+            "Also name candidates you would deliberately deprioritise despite the rules-based qualification."
+        )
+    elif risk_clicked:
+        quick_prompt = (
+            "Which candidates are the weakest or least attractive right now despite appearing on this list? "
+            "Explain exactly what weakens the setup and assign an action to each."
+        )
+    elif entry_clicked:
+        quick_prompt = (
+            "Compare the candidates specifically on entry timing. Identify which are actionable now, "
+            "which need a pullback, which need a breakout confirmation, and which should simply be monitored."
+        )
+
+    for message in st.session_state[history_key]:
+        with st.chat_message(
+            message["role"],
+            avatar=_ai_avatar_source() if message["role"] == "assistant" else None,
+        ):
+            display, action = _split_ai_action(message["content"])
+            if action:
+                _render_ai_action(action)
+            st.markdown(display)
+
+    typed = st.chat_input(
+        f"Ask AI to compare the current {list_name} candidates...",
+        key=f"{key_prefix}::chat_input",
+    )
+    prompt = quick_prompt or typed
+
+    if prompt:
+        st.session_state[history_key].append({"role": "user", "content": prompt})
+        st.session_state[history_key] = st.session_state[history_key][-20:]
+
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant", avatar=_ai_avatar_source()):
+            with st.spinner("AI is comparing the current candidates..."):
+                try:
+                    answer = _gemini_list_reply(
+                        prompt,
+                        frame,
+                        list_name,
+                        st.session_state[history_key][:-1],
+                    )
+                    display, action = _split_ai_action(answer)
+                    if action:
+                        _render_ai_action(action)
+                    st.markdown(display)
+                    st.session_state[history_key].append(
+                        {"role": "assistant", "content": answer}
+                    )
+                    st.session_state[history_key] = st.session_state[history_key][-20:]
+                except Exception as exc:
+                    st.error(f"AI review failed: {exc}")
+
+    remaining = AI_SESSION_CALL_LIMIT - int(st.session_state.get("ai_call_count", 0))
+    st.caption(
+        f"AI session calls remaining: {max(0, remaining)}. "
+        f"Candidate review is capped at {AI_LIST_REVIEW_LIMIT} names per call."
+    )
+
+
 def _gemini_reply(question, context, chart_png, history):
     api_key = st.secrets.get("GEMINI_API_KEY", None)
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is missing. Add it in Streamlit Secrets.")
+
+    _ai_consume_call()
 
     client = genai.Client(
         api_key=api_key,
@@ -2137,6 +2442,15 @@ Answer for a reasonably informed retail investor:
 
 Do not blindly apply generic heuristics such as 'RSI above 70 means do not buy'. Interpret the
 indicator in the context of the supplied strategy, chart, and other evidence.
+
+Every answer must finish with exactly one explicit final action selected from:
+STRONG BUY, BUY, ACCUMULATE, HOLD / MONITOR, WAIT FOR PULLBACK, WAIT FOR BREAKOUT,
+AVOID FOR NOW, SELL / EXIT.
+
+The final line must be exactly:
+FINAL_ACTION: <one allowed action>
+
+This is an evidence-based action classification for the current supplied data, not a guarantee.
 """
 
     payload = {
@@ -2159,9 +2473,12 @@ indicator in the context of the supplied strategy, chart, and other evidence.
     try:
         response = client.models.generate_content(model=GEMINI_MODEL, contents=parts)
     except Exception as exc:
+        details = str(exc)
+        if "429" in details or "quota" in details.lower() or "rate" in details.lower():
+            raise RuntimeError("Gemini free-tier quota or rate limit reached. Try again later.") from exc
         raise RuntimeError(
             "Gemini did not respond within 30 seconds or the request was rejected. "
-            f"Details: {exc}"
+            f"Details: {details}"
         ) from exc
 
     answer = getattr(response, "text", None)
@@ -2275,7 +2592,10 @@ def nifty_ai_page():
             message["role"],
             avatar=_ai_avatar_source() if message["role"] == "assistant" else None,
         ):
-            st.markdown(message["content"])
+            display, action = _split_ai_action(message["content"])
+            if action:
+                _render_ai_action(action)
+            st.markdown(display)
 
     typed_prompt = st.chat_input(f"Ask Nifty AI about {selected}...")
     prompt = selected_quick or typed_prompt
@@ -2295,7 +2615,10 @@ def nifty_ai_page():
                         chart_png,
                         st.session_state[chat_key][:-1],
                     )
-                    st.markdown(answer)
+                    display, action = _split_ai_action(answer)
+                    if action:
+                        _render_ai_action(action)
+                    st.markdown(display)
                     st.session_state[chat_key].append(
                         {"role": "assistant", "content": answer}
                     )
@@ -2303,10 +2626,12 @@ def nifty_ai_page():
                 except Exception as exc:
                     st.error(f"AI request failed: {exc}")
 
+    remaining = AI_SESSION_CALL_LIMIT - int(st.session_state.get("ai_call_count", 0))
     st.caption(
-        f"Model: {GEMINI_MODEL}. AI is called only when you submit a question. "
-        f"Technical chart context is included by default, while Yahoo Finance fundamentals are fetched only when relevant. "
-        f"Strategy verification uses the {AI_STRATEGY_PREFILTER_SCORE}+ high-conviction candidate pool and does not alter the terminal's visible strategy rules."
+        f"Model: {GEMINI_MODEL}. Every AI response now ends with an explicit action classification. "
+        f"Technical chart context is included by default, while Yahoo Finance fundamentals are fetched when relevant. "
+        f"Strategy verification uses the {AI_STRATEGY_PREFILTER_SCORE}+ high-conviction candidate pool and does not alter the terminal's visible strategy rules. "
+        f"AI session calls remaining: {max(0, remaining)}."
     )
 
 
