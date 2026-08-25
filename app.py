@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
+import yfinance as yf
 from google import genai
 from google.genai import types
 from plotly.subplots import make_subplots
@@ -1879,6 +1880,7 @@ def _ai_stock_context(symbol):
 
     context = {
         "symbol": str(symbol),
+        "yahoo_symbol": str(yahoo_symbol) if yahoo_symbol else None,
         "data_date": str(row_data.get("Date", "")),
         "current_terminal_snapshot": row_data,
         "strategy_status": strategy_status,
@@ -1892,54 +1894,102 @@ def _ai_stock_context(symbol):
 
     return context, history, _ai_chart_png(history, symbol)
 
+
 def _ai_compact_context(context):
-    """Keep the Gemini payload small and predictable."""
+    """Fixed-size factual packet. Interpretation is left to Gemini."""
     snapshot = context.get("current_terminal_snapshot", {})
     preferred = [
         "Symbol", "Company", "Date", "Close", "Price", "Last Price",
         "RSI14", "EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255",
-        "RS Rank", "RS Percentile", "Volume", "AvgVolume",
-        "Liquidity", "Market Cap", "PE", "P/E", "EV/EBITDA",
-        "Revenue Growth", "Operating Margin", "Net Margin", "Debt/Equity",
-        "Fundamental Coverage", "Data Quality",
-        "Confluence Score", "Conviction Score", "Buy Score",
-        "Emerging Score", "Emerging Rank",
+        "RS3MPct", "RS6MPct", "VolumeRatio", "Volume", "AvgVolume",
+        "AvgTradedValue20", "LiquidityBucket", "ATRPercent",
+        "DataQualityStatus", "Fundamental Coverage",
+        "BullMomentum", "BullSwing", "Breakout20", "VolumeConfirmedMomentum",
     ]
-
-    compact = {}
     lower_lookup = {str(k).lower(): k for k in snapshot.keys()}
-
+    compact = {}
     for wanted in preferred:
         actual = lower_lookup.get(wanted.lower())
         if actual is not None:
             compact[str(actual)] = snapshot[actual]
 
-    # Preserve score/setup-related fields even if their exact names differ.
-    for key, value in snapshot.items():
-        key_text = str(key).lower()
-        if any(token in key_text for token in [
-            "score", "rank", "setup", "emerging", "confluence",
-            "conviction", "growth", "margin", "debt", "coverage"
-        ]):
-            compact[str(key)] = value
-
     return {
         "symbol": context.get("symbol"),
         "data_date": context.get("data_date"),
         "strategy_status": context.get("strategy_status", {}),
-        "snapshot": compact,
-        "rules": context.get("rules", {}),
+        "technical_snapshot": compact,
     }
 
 
-def _ai_question_needs_chart(question):
+def _ai_question_needs_fundamentals(question):
     q = str(question).lower()
-    chart_terms = [
-        "chart", "technical", "setup", "extended", "extension",
-        "moving average", "ema", "sma", "support", "resistance",
-        "breakout", "trend", "rsi", "price action", "pullback",
+    terms = [
+        "fundamental", "valuation", "value", "expensive", "cheap", "overvalued",
+        "undervalued", "company", "business", "revenue", "sales", "earnings",
+        "profit", "margin", "debt", "balance sheet", "cash flow", "roe", "roa",
+        "financial", "long term", "1 year", "2 year", "3 year", "investment",
+        "hold", "quality company", "growth"
     ]
-    return any(term in q for term in chart_terms)
+    return any(term in q for term in terms)
+
+
+def _ai_question_is_clearly_fundamental_only(question):
+    q = str(question).lower()
+    fundamental = _ai_question_needs_fundamentals(q)
+    technical_terms = [
+        "entry", "buy now", "technical", "chart", "setup", "rsi", "ema", "sma",
+        "support", "resistance", "breakout", "trend", "price action", "pullback",
+        "momentum", "extended", "volume", "stop loss"
+    ]
+    return fundamental and not any(term in q for term in technical_terms)
+
+
+def _ai_fetch_fundamental_packet(context):
+    """Fetch and cache a richer Yahoo Finance packet for AI research questions."""
+    ticker = context.get("yahoo_symbol")
+    if not ticker:
+        return {"available": False, "reason": "Yahoo Finance symbol is unavailable."}
+
+    scan_id = _current_scan_id() or "no-scan"
+    cache = st.session_state.setdefault("ai_fundamental_cache", {})
+    cache_key = f"{scan_id}::{ticker}"
+    if cache_key in cache:
+        return cache[cache_key]
+
+    fields = {
+        "company": ["longName", "shortName", "sector", "industry"],
+        "valuation": ["marketCap", "trailingPE", "forwardPE", "priceToBook", "enterpriseToEbitda"],
+        "growth": ["revenueGrowth", "earningsGrowth", "earningsQuarterlyGrowth"],
+        "profitability": ["profitMargins", "operatingMargins", "returnOnEquity", "returnOnAssets"],
+        "balance_sheet": ["totalCash", "totalDebt", "debtToEquity", "currentRatio", "quickRatio"],
+        "cash_flow": ["operatingCashflow", "freeCashflow"],
+        "share_statistics": ["sharesOutstanding", "floatShares", "heldPercentInsiders", "heldPercentInstitutions"],
+    }
+    pct_fields = {"revenueGrowth", "earningsGrowth", "earningsQuarterlyGrowth", "profitMargins", "operatingMargins", "returnOnEquity", "returnOnAssets", "heldPercentInsiders", "heldPercentInstitutions"}
+    try:
+        info = yf.Ticker(ticker).info or {}
+        packet = {"available": bool(info), "source": "Yahoo Finance", "ticker": ticker}
+        for section, names in fields.items():
+            values = {}
+            for name in names:
+                value = info.get(name)
+                if value is not None:
+                    if name in pct_fields and isinstance(value, (int, float)):
+                        value = value * 100
+                    values[name] = _ai_json_value(value)
+            packet[section] = values
+        if not info:
+            packet["reason"] = "Yahoo Finance returned no usable fundamental snapshot."
+    except Exception as exc:
+        packet = {"available": False, "source": "Yahoo Finance", "ticker": ticker, "reason": str(exc)[:180]}
+
+    cache[cache_key] = packet
+    return packet
+
+
+def _ai_question_needs_chart(question):
+    """Default to chart context. Skip only for clearly fundamental-only questions."""
+    return not _ai_question_is_clearly_fundamental_only(question)
 
 
 def _gemini_reply(question, context, chart_png, history):
@@ -1947,7 +1997,6 @@ def _gemini_reply(question, context, chart_png, history):
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is missing. Add it in Streamlit Secrets.")
 
-    # Hard timeout prevents the Streamlit spinner from waiting indefinitely.
     client = genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(timeout=30000),
@@ -1958,98 +2007,67 @@ def _gemini_reply(question, context, chart_png, history):
         for item in history[-6:]
     ]
 
+    fundamental_packet = None
+    if _ai_question_needs_fundamentals(question):
+        fundamental_packet = _ai_fetch_fundamental_packet(context)
+
     instruction = """
-You are Nifty AI, a plain-English research assistant for retail investors.
+You are Nifty AI, a practical research copilot inside a retail-focused Indian market terminal.
 
-Your primary job is to explain what the terminal is saying in simple language.
-Do not sound like a professional trading desk or a technical-analysis textbook.
+You are given factual terminal data. Treat strategy membership, rank, setup names, and numerical
+scores as facts from the application. Do not invent or alter those facts.
 
-MOST IMPORTANT:
-The supplied strategy_status tells you the exact current strategy membership.
+Beyond those facts, reason independently. You may discuss the relationship between momentum,
+entry timing, valuation, business quality, growth, profitability, leverage, and risk. Do not force
+your answer to mechanically repeat the scanner's conclusion.
 
-If a stock is verified as a member of the Final Buy List, lead with the Final Buy List.
-Do not lead with Confluence alone, because Confluence is an earlier stage and the
-Final Buy List is the stricter shortlist.
+Important distinction:
+- Strategy status answers whether the stock currently qualifies under a terminal strategy.
+- Entry timing answers whether the current price appears attractive, extended, or risky.
+These can point in different directions without contradiction. Explain that distinction naturally
+when it matters instead of treating either one as automatically decisive.
 
-Use this hierarchy when multiple memberships are true:
-1. Final Buy List
-2. Emerging Buy List
-3. Confluence
-4. Emerging Setups
+Use the strongest verified strategy membership first when the user asks about qualification:
+Final Buy List, Emerging Buy List, Confluence, then Emerging Setups.
+Do not guess membership. If a field is missing, unavailable, or unsupported by the supplied data,
+say so plainly.
 
-The supplied strategy_status tells you whether the stock is currently in:
-- Confluence
-- Final Buy List
-- Emerging Setups
-- Emerging Buy List
+Fundamental data, when supplied, is a Yahoo Finance snapshot. Use it as context, not as a
+substitute for audited filings. Avoid pretending a single ratio proves that a company is good or bad.
+If fundamentals and technicals tell different stories, explain the disagreement.
 
-Never guess strategy membership. State it clearly when the user asks:
-"This stock is currently in Confluence because..."
-or
-"This stock is not currently on the Final Buy List..."
+Answer for a reasonably informed retail investor:
+- Be direct and conversational.
+- Prefer plain English.
+- Explain jargon briefly when useful.
+- Do not dump every available metric.
+- Use short sections and bullets only when they improve clarity.
+- Do not invent news, events, targets, support levels, or financial figures not present in the data.
+- Do not guarantee returns or give personalised financial advice.
 
-When explaining WHY it is on a list:
-1. Start with the list name and a one-sentence plain-English reason.
-2. Translate the actual qualifying setup and score into simple language.
-3. Give 2 to 4 concrete strengths.
-4. Give the biggest caution or risk.
-5. End with "What this means for you" in plain language.
-
-Language rules:
-- Prefer "the stock has been stronger than many others recently" over
-  "high relative strength percentile".
-- Prefer "buyers are still supporting the trend" over "bullish EMA alignment".
-- Prefer "the stock is moving with stronger-than-usual trading activity" over
-  "volume confirmation".
-- Explain RSI, moving averages, breakouts, valuation, or any jargon immediately
-  if you must use it.
-- Do not dump every metric into the answer.
-- Do not use dense indicator abbreviations unless the user specifically asks.
-- A retail investor should understand the answer without prior technical knowledge.
-
-Targets:
-- Do not invent exact price targets.
-- If the user asks "what could be the target?", explain whether the supplied
-  chart/data shows a meaningful resistance or extension area.
-- Clearly label such areas as possible technical zones, not guaranteed targets.
-
-Data integrity:
-- Use only the supplied terminal data, chart, and conversation.
-- The terminal engine is the source of truth for calculations and scores.
-- Do not invent prices, news, fundamentals, indicators, targets, or scores.
-- Do not recalculate or modify any terminal score.
-- If something is not verified, say so clearly.
-- Do not provide personalised financial advice or guarantee returns.
-
-Default answer style:
-Use short sections and bullets. Keep the answer useful, clear, and retail-friendly.
+Do not blindly apply generic heuristics such as 'RSI above 70 means do not buy'. Interpret the
+indicator in the context of the supplied strategy, chart, and other evidence.
 """
 
     payload = {
         "question": str(question),
-        "stock_context": _ai_compact_context(context),
-        "conversation": conversation,
+        "research_packet": _ai_compact_context(context),
+        "fundamentals": fundamental_packet,
+        "recent_conversation": conversation,
     }
 
     parts = [
         types.Part.from_text(text=instruction),
         types.Part.from_text(
-            text="Terminal context:\n" +
-            json.dumps(payload, default=str, ensure_ascii=False)
+            text="Research packet:\n" + json.dumps(payload, default=str, ensure_ascii=False)
         ),
     ]
 
-    # Send the chart only when the question actually needs visual technical context.
     if chart_png and _ai_question_needs_chart(question):
-        parts.append(
-            types.Part.from_bytes(data=chart_png, mime_type="image/png")
-        )
+        parts.append(types.Part.from_bytes(data=chart_png, mime_type="image/png"))
 
     try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=parts,
-        )
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=parts)
     except Exception as exc:
         raise RuntimeError(
             "Gemini did not respond within 30 seconds or the request was rejected. "
@@ -2058,10 +2076,7 @@ Use short sections and bullets. Keep the answer useful, clear, and retail-friend
 
     answer = getattr(response, "text", None)
     if not answer:
-        raise RuntimeError(
-            "Gemini returned no usable text. Try a shorter question."
-        )
-
+        raise RuntimeError("Gemini returned no usable text. Try a shorter question.")
     return answer
 
 def nifty_ai_page():
@@ -2116,6 +2131,7 @@ def nifty_ai_page():
 
     with right:
         st.subheader("Current terminal snapshot")
+        st.caption("Yahoo Finance fundamentals are fetched on demand for questions about valuation, business quality, growth, profitability, debt, cash flow, or longer-term investing.")
         preview = pd.DataFrame(
             {
                 "Metric": list(context["current_terminal_snapshot"].keys()),
@@ -2169,6 +2185,7 @@ def nifty_ai_page():
 
     if prompt:
         st.session_state[chat_key].append({"role": "user", "content": prompt})
+        st.session_state[chat_key] = st.session_state[chat_key][-20:]
         with st.chat_message("user"):
             st.markdown(prompt)
 
@@ -2185,11 +2202,13 @@ def nifty_ai_page():
                     st.session_state[chat_key].append(
                         {"role": "assistant", "content": answer}
                     )
+                    st.session_state[chat_key] = st.session_state[chat_key][-20:]
                 except Exception as exc:
                     st.error(f"AI request failed: {exc}")
 
     st.caption(
         f"Model: {GEMINI_MODEL}. AI is called only when you submit a question. "
+        f"Technical chart context is included by default, while Yahoo Finance fundamentals are fetched only when relevant. "
         f"Strategy verification uses the {AI_STRATEGY_PREFILTER_SCORE}+ high-conviction candidate pool and does not alter the terminal's visible strategy rules."
     )
 
