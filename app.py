@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+import io
+import json
 
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+from google import genai
+from google.genai import types
 from plotly.subplots import make_subplots
 
 from engine import (
@@ -1394,9 +1399,16 @@ not a guaranteed buy signal.
                 "EV/EBITDA": ev_ebitda,
                 "Market Cap": market_cap,
             }
-            coverage = sum(pd.notna(v) for v in values.values())
-            # Market Cap is informative but not a quality point. Coverage counts
-            # the five scored fields plus market cap for transparency.
+            # Fundamental coverage counts only the five scored quality fields.
+            # Market Cap is always available/informational and is not scored.
+            scored_values = {
+                "Revenue Growth %": revenue_growth,
+                "Profit Margin %": margin,
+                "Debt/Equity": debt_equity,
+                "P/E": pe,
+                "EV/EBITDA": ev_ebitda,
+            }
+            coverage = sum(pd.notna(v) for v in scored_values.values())
             for key, value in values.items():
                 working.at[idx, key] = value
             working.at[idx, "Fundamental Score"] = round(min(fundamental_score, 20.0), 1)
@@ -1517,7 +1529,7 @@ not a guaranteed buy signal.
             "RS3MPct": st.column_config.NumberColumn("RS 3M %ile", format="%.0f"),
             "RSI14": st.column_config.NumberColumn("RSI", format="%.1f"),
             "VolumeRatio": st.column_config.NumberColumn("Volume x", format="%.2f"),
-            "Fundamental Coverage": st.column_config.NumberColumn("Fund. Coverage", format="%d/6"),
+            "Fundamental Coverage": st.column_config.NumberColumn("Fund. Coverage", format="%d/5"),
         },
     )
 
@@ -1544,6 +1556,8 @@ not a guaranteed buy signal.
         buy.get("BullMomentum", pd.Series(False, index=buy.index)).fillna(False).astype(bool)
         | buy.get("BullSwing", pd.Series(False, index=buy.index)).fillna(False).astype(bool)
     ].copy()
+    # Require at least 3 of the 5 scored fundamental fields.
+    # Market Cap is excluded because it is informational and not scored.
     buy = buy.loc[buy["Fundamental Coverage"] >= 3].copy()
     buy = buy.loc[buy["Fundamental Score"] >= 9].copy()
     buy = buy.loc[numeric_series(buy, "AvgTradedValue20").fillna(0) >= 1_00_00_000].copy()
@@ -1582,7 +1596,7 @@ not a guaranteed buy signal.
                 "Emerging Score": st.column_config.NumberColumn("Score", format="%.1f"),
                 "Technical Score": st.column_config.NumberColumn("Technical", format="%.1f"),
                 "Fundamental Score": st.column_config.NumberColumn("Fundamentals", format="%.1f"),
-                "Fundamental Coverage": st.column_config.NumberColumn("Fund. Coverage", format="%d/6"),
+                "Fundamental Coverage": st.column_config.NumberColumn("Fund. Coverage", format="%d/5"),
                 "RS3MPct": st.column_config.NumberColumn("RS 3M %ile", format="%.0f"),
                 "VolumeRatio": st.column_config.NumberColumn("Volume x", format="%.2f"),
                 "Revenue Growth %": st.column_config.NumberColumn("Revenue Growth", format="%.1f%%"),
@@ -1651,6 +1665,261 @@ normal scanner and be evaluated by the full Confluence and Final Buy List logic.
 """
         )
 
+
+# -------------------------------------------------------------------
+# Nifty AI Analyst. Read-only layer over the existing scan output.
+# This section does not modify engine.py, scores, or scanner state.
+# -------------------------------------------------------------------
+
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+
+
+def _ai_chart_png(frame, symbol):
+    if frame is None or frame.empty:
+        return None
+
+    plot = frame.tail(180).copy()
+    x = pd.to_datetime(plot["Date"], errors="coerce") if "Date" in plot.columns else plot.index
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(10, 6.5),
+        gridspec_kw={"height_ratios": [3, 1]},
+        sharex=True,
+    )
+
+    if "Close" in plot.columns:
+        ax1.plot(x, pd.to_numeric(plot["Close"], errors="coerce"), label="Close", linewidth=1.6)
+
+    for col in ["EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255"]:
+        if col in plot.columns:
+            ax1.plot(x, pd.to_numeric(plot[col], errors="coerce"), label=col, linewidth=1.0)
+
+    ax1.set_title(f"{symbol} . Existing terminal indicator history")
+    ax1.legend(loc="upper left", ncol=3, fontsize=8)
+    ax1.grid(alpha=0.2)
+
+    if "RSI14" in plot.columns:
+        ax2.plot(x, pd.to_numeric(plot["RSI14"], errors="coerce"), label="RSI14", linewidth=1.2)
+        for level in [30, 50, 70]:
+            ax2.axhline(level, linewidth=0.8, linestyle="--", alpha=0.6)
+        ax2.set_ylim(0, 100)
+        ax2.grid(alpha=0.2)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def _ai_json_value(value):
+    if pd.isna(value):
+        return None
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return str(value)
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _ai_stock_context(symbol):
+    snapshot = st.session_state.get("snapshot")
+    indicators = st.session_state.get("indicators")
+
+    if snapshot is None or snapshot.empty:
+        return None, None, None
+
+    rows = snapshot.loc[snapshot["Symbol"].astype(str) == str(symbol)]
+    if rows.empty:
+        return None, None, None
+
+    row = rows.iloc[0]
+    row_data = {str(col): _ai_json_value(row[col]) for col in snapshot.columns}
+
+    yahoo_symbol = row_data.get("Yahoo Symbol")
+    history = None
+    if indicators is not None and not indicators.empty and "Yahoo Symbol" in indicators.columns:
+        history = indicators.loc[
+            indicators["Yahoo Symbol"].astype(str) == str(yahoo_symbol)
+        ].copy()
+
+    context = {
+        "symbol": str(symbol),
+        "data_date": str(row_data.get("Date", "")),
+        "current_terminal_snapshot": row_data,
+        "rules": {
+            "scores_are_engine_output": True,
+            "ai_must_not_recalculate_or_change_scores": True,
+            "missing_data_must_be_called_missing": True,
+        },
+    }
+
+    return context, history, _ai_chart_png(history, symbol)
+
+
+def _gemini_reply(question, context, chart_png, history):
+    api_key = st.secrets.get("GEMINI_API_KEY", None)
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is missing. Add it in Streamlit Secrets.")
+
+    client = genai.Client(api_key=api_key)
+
+    conversation = [
+        {"role": item["role"], "content": item["content"]}
+        for item in history[-8:]
+    ]
+
+    instruction = """
+You are Nifty AI Analyst inside a market-research terminal.
+Use only the supplied terminal snapshot, indicator chart, and conversation.
+The engine is the source of truth for calculations and scores.
+Do not invent data, news, prices, indicators, targets, or scores.
+Do not recalculate or modify any score.
+If data is missing, explicitly say so.
+Interpret the setup clearly and avoid personalised financial advice.
+When relevant discuss: setup, positives, risks or contradictions, and what to monitor.
+"""
+
+    payload = {
+        "question": question,
+        "stock_context": context,
+        "conversation": conversation,
+    }
+
+    parts = [
+        types.Part.from_text(text=instruction),
+        types.Part.from_text(
+            text="Terminal context:\n" + json.dumps(payload, default=str, ensure_ascii=False)
+        ),
+    ]
+
+    if chart_png:
+        parts.append(types.Part.from_bytes(data=chart_png, mime_type="image/png"))
+
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=parts,
+    )
+    answer = getattr(response, "text", None)
+    if not answer:
+        raise RuntimeError("Gemini returned an empty response.")
+    return answer
+
+
+def nifty_ai_page():
+    require_scan()
+
+    snapshot = st.session_state.get("snapshot")
+    if snapshot is None or snapshot.empty:
+        st.warning("RUN A MARKET SCAN")
+        return
+
+    if "Symbol" not in snapshot.columns:
+        st.error("The current scan does not contain a Symbol column.")
+        return
+
+    st.title("🤖 Nifty AI Analyst")
+    st.caption(
+        "Read-only AI interpretation of the current terminal scan. "
+        "The existing engine and scores remain the source of truth."
+    )
+
+    symbols = sorted(snapshot["Symbol"].dropna().astype(str).unique().tolist())
+    selected = st.selectbox("Select stock", symbols, key="nifty_ai_selected_stock")
+
+    context, frame, chart_png = _ai_stock_context(selected)
+    if context is None:
+        st.error("Unable to build AI context for the selected stock.")
+        return
+
+    left, right = st.columns([1.65, 1])
+
+    with left:
+        if frame is not None and not frame.empty:
+            st.plotly_chart(
+                market_chart(
+                    frame,
+                    selected,
+                    ["EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255"],
+                    rsi_col="RSI14",
+                    days=252,
+                    cross_columns=[
+                        c for c in ["Cross9_21", "Cross20_50", "Cross50_200"]
+                        if c in frame.columns
+                    ],
+                    rsi_lines=[(30, "RSI 30"), (50, "RSI 50"), (70, "RSI 70")],
+                ),
+                use_container_width=True,
+                config={"displaylogo": False, "scrollZoom": True},
+            )
+        else:
+            st.info("No indicator history is available for the selected stock.")
+
+    with right:
+        st.subheader("Current terminal snapshot")
+        preview = pd.DataFrame(
+            {
+                "Metric": list(context["current_terminal_snapshot"].keys()),
+                "Value": list(context["current_terminal_snapshot"].values()),
+            }
+        )
+        st.dataframe(preview, use_container_width=True, height=520, hide_index=True)
+
+    chat_key = f"nifty_ai_chat::{selected}"
+    if chat_key not in st.session_state:
+        st.session_state[chat_key] = []
+
+    st.divider()
+    st.subheader(f"Chat about {selected}")
+
+    quick_prompts = [
+        ("Why this stock?", "Why is this stock showing up in the current terminal output?"),
+        ("Biggest risk", "Explain the technical setup simply and identify the biggest risk."),
+        ("Is it extended?", "Is the current setup extended or reasonably positioned based on the supplied chart and indicators?"),
+        ("Strengths & risks", "Give me the key positives, contradictions, and what to monitor next."),
+    ]
+
+    selected_quick = None
+    cols = st.columns(4)
+    for col, (label, prompt) in zip(cols, quick_prompts):
+        with col:
+            if st.button(label, key=f"ai_quick::{selected}::{label}", use_container_width=True):
+                selected_quick = prompt
+
+    for message in st.session_state[chat_key]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    typed_prompt = st.chat_input(f"Ask Nifty AI about {selected}...")
+    prompt = selected_quick or typed_prompt
+
+    if prompt:
+        st.session_state[chat_key].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Analysing current terminal data..."):
+                try:
+                    answer = _gemini_reply(
+                        prompt,
+                        context,
+                        chart_png,
+                        st.session_state[chat_key],
+                    )
+                    st.markdown(answer)
+                    st.session_state[chat_key].append(
+                        {"role": "assistant", "content": answer}
+                    )
+                except Exception as exc:
+                    st.error(f"AI request failed: {exc}")
+
+    st.caption(f"Model: {GEMINI_MODEL}. AI is called only when you submit a question.")
+
+
 def regime_page():
     strategy_page("regime")
 
@@ -1717,6 +1986,14 @@ pages = {
             title="EMA 255 Pullback",
             icon="↔️",
             url_path="ema-255-pullback",
+        ),
+    ],
+    "AI": [
+        st.Page(
+            nifty_ai_page,
+            title="Nifty AI Analyst",
+            icon="🤖",
+            url_path="nifty-ai",
         ),
     ],
     "Decide": [
