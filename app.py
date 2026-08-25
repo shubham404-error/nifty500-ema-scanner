@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 import io
 import json
 import hashlib
@@ -23,6 +24,19 @@ AI_STRATEGY_PREFILTER_SCORE = 75
 AI_DEFAULT_FINAL_BUY_CONVICTION = 78
 AI_DEFAULT_FINAL_BUY_LIQUIDITY = True
 AI_FUNDAMENTAL_FETCH_LIMIT = 25
+
+# -------------------------------------------------------------------
+# Branding asset. The generated logo will be added here later.
+# One file is reused for the sidebar, page branding and AI chat avatar.
+# -------------------------------------------------------------------
+# Branding assets. These filenames match the root-level files in the GitHub repository.
+APP_LOGO_PATH = Path("nifty_market_terminal_logo.png")
+APP_AVATAR_PATH = Path("nifty_market_terminal_avatar.png")
+APP_WORDMARK_PATH = Path("nifty_market_terminal_wordmark.png")
+APP_FAVICON_PATH = Path("nifty_favicon.png")
+
+APP_LOGO_FALLBACK = "📈"
+AI_AVATAR_FALLBACK = "🤖"
 
 from engine import (
     add_days_since_cross,
@@ -134,6 +148,21 @@ html, body {
     font-size: 28px;
     font-weight: 750;
     margin-top: 3px;
+}
+
+.brand-lockup-name {
+    font-size: 15px;
+    font-weight: 750;
+    line-height: 1.15;
+    letter-spacing: 0.2px;
+}
+
+.brand-lockup-sub {
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.1px;
+    margin-top: 2px;
 }
 
 .terminal-sub {
@@ -333,20 +362,85 @@ hr {
 # Shared helpers
 # -------------------------------------------------------------------
 
-def terminal_header(page_title: str, subtitle: str):
+def _logo_exists() -> bool:
+    return APP_LOGO_PATH.is_file()
+
+
+def _avatar_exists() -> bool:
+    return APP_AVATAR_PATH.is_file()
+
+
+def _wordmark_exists() -> bool:
+    return APP_WORDMARK_PATH.is_file()
+
+
+def _logo_source():
+    return str(APP_LOGO_PATH) if _logo_exists() else APP_LOGO_FALLBACK
+
+
+def _ai_avatar_source():
+    return str(APP_AVATAR_PATH) if _avatar_exists() else (
+        str(APP_LOGO_PATH) if _logo_exists() else AI_AVATAR_FALLBACK
+    )
+
+
+def render_sidebar_brand():
+    if _wordmark_exists():
+        st.image(str(APP_WORDMARK_PATH), use_container_width=True)
+        st.caption("Research terminal")
+        return
+
+    logo_col, text_col = st.columns([0.24, 1], gap="small")
+
+    with logo_col:
+        if _logo_exists():
+            st.image(str(APP_LOGO_PATH), width=42)
+        else:
+            st.markdown("### 📈")
+
+    with text_col:
+        st.markdown(
+            """
+<div class="brand-lockup-name">Nifty Total<br>Market Terminal</div>
+<div class="brand-lockup-sub">Research terminal</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+
+def terminal_header(page_title: str, subtitle: str, show_logo: bool = False):
     universe_count = len(st.session_state.get("universe", []))
     scan_date = st.session_state.get("scan_date", "Not run")
 
-    st.markdown(
-        f"""
+    if show_logo:
+        logo_col, header_col = st.columns([0.08, 1], gap="small")
+        with logo_col:
+            if _logo_exists():
+                st.image(str(APP_LOGO_PATH), width=54)
+            else:
+                st.markdown("### 📈")
+        with header_col:
+            st.markdown(
+                f"""
 <div class="terminal-topbar">
   <div class="terminal-kicker">NIFTY MARKET TERMINAL</div>
   <div class="terminal-brand">{page_title}</div>
   <div class="terminal-sub">{subtitle}</div>
 </div>
 """,
-        unsafe_allow_html=True,
-    )
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown(
+            f"""
+<div class="terminal-topbar">
+  <div class="terminal-kicker">NIFTY MARKET TERMINAL</div>
+  <div class="terminal-brand">{page_title}</div>
+  <div class="terminal-sub">{subtitle}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
     if "snapshot" in st.session_state:
         status = '<span class="status-chip green">SCAN READY</span>'
@@ -363,7 +457,6 @@ def terminal_header(page_title: str, subtitle: str):
 """,
         unsafe_allow_html=True,
     )
-
 
 
 def ai_prefilter_note():
@@ -499,6 +592,7 @@ def home_page():
     terminal_header(
         "Home",
         "A guided workspace for finding and researching Indian equity setups",
+        show_logo=True,
     )
 
     page_intro(
@@ -2080,8 +2174,13 @@ indicator in the context of the supplied strategy, chart, and other evidence.
     return answer
 
 def nifty_ai_page():
-    ai_prefilter_note()
     require_scan()
+    terminal_header(
+        "Nifty AI Analyst",
+        "Ask questions about the current scan, chart, strategy status, and available fundamentals.",
+        show_logo=True,
+    )
+    ai_prefilter_note()
 
     snapshot = st.session_state.get("snapshot")
     if snapshot is None or snapshot.empty:
@@ -2092,7 +2191,6 @@ def nifty_ai_page():
         st.error("The current scan does not contain a Symbol column.")
         return
 
-    st.title("🤖 Nifty AI Analyst")
     st.caption(
         "Read-only AI interpretation of the current terminal scan. "
         "The existing engine and scores remain the source of truth."
@@ -2177,7 +2275,10 @@ def nifty_ai_page():
                 selected_quick = prompt
 
     for message in st.session_state[chat_key]:
-        with st.chat_message(message["role"]):
+        with st.chat_message(
+            message["role"],
+            avatar=_ai_avatar_source() if message["role"] == "assistant" else None,
+        ):
             st.markdown(message["content"])
 
     typed_prompt = st.chat_input(f"Ask Nifty AI about {selected}...")
@@ -2189,7 +2290,7 @@ def nifty_ai_page():
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar=_ai_avatar_source()):
             with st.spinner("Analysing current terminal data..."):
                 try:
                     answer = _gemini_reply(
@@ -2285,7 +2386,7 @@ pages = {
         st.Page(
             nifty_ai_page,
             title="Nifty AI Analyst",
-            icon="🤖",
+            icon="✨",
             url_path="nifty-ai",
         ),
     ],
@@ -2304,6 +2405,10 @@ pages = {
         ),
     ],
 }
+
+with st.sidebar:
+    render_sidebar_brand()
+    st.divider()
 
 pg = st.navigation(
     pages,
