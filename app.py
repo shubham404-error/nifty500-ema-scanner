@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 import io
 import json
+import hashlib
 
 import pandas as pd
 import streamlit as st
@@ -354,6 +355,17 @@ def terminal_header(page_title: str, subtitle: str):
     )
 
 
+
+def ai_prefilter_note():
+    st.caption(
+        f"AI verification note. To keep strategy checks focused and efficient, "
+        f"the AI uses a high-conviction candidate pool of {AI_STRATEGY_PREFILTER_SCORE}+ "
+        f"before running its list verification. This does not change the visible "
+        f"Confluence, Final Buy List, or Emerging strategy rules."
+    )
+
+
+
 def page_intro(title: str, copy: str):
     st.markdown(
         f"""
@@ -493,9 +505,9 @@ def home_page():
         "The workflow is simple. The analysis underneath it is not.",
         [
             "Scan the market once. The result is reused across the app.",
-            "Open Market Health, Momentum, Swing, or Pullback.",
-            "Check the stock's chart before treating a signal as meaningful.",
-            "Use Confluence and Shortlist to narrow your research list.",
+            "Explore Market Health, Momentum, Swing, Pullback, or Emerging Setups.",
+            "Check the stock's chart and then use Confluence and Final Buy List to narrow your research list.",
+            "Use the new Nifty AI Analyst to ask, in plain English, why a stock qualified, what it means, and what to watch next.",
         ],
     )
 
@@ -540,6 +552,21 @@ def home_page():
     for col, (title, text) in zip(cards, sections):
         with col:
             card(title, text)
+
+    st.markdown('<div class="section-title">New. Nifty AI Analyst</div>', unsafe_allow_html=True)
+
+    ai_col, ai_note_col = st.columns([2.2, 1])
+    with ai_col:
+        card(
+            "Ask why a stock qualified",
+            "Nifty AI Analyst is integrated into the terminal so you can select a stock and ask why it appeared in a strategy, what the setup means in plain English, what looks positive, and what to monitor next. It uses the terminal's current strategy and market context rather than acting as a separate stock-picking engine.",
+        )
+    with ai_note_col:
+        st.info(
+            f"AI verification uses a {AI_STRATEGY_PREFILTER_SCORE}+ high-conviction "
+            "candidate pool for Confluence and buy-list checks. This improves efficiency "
+            "without changing the visible strategy rules or rankings."
+        )
 
     st.markdown('<div class="section-title">How to read a stock</div>', unsafe_allow_html=True)
 
@@ -673,6 +700,10 @@ def scan_page():
             st.session_state["convergence"] = convergence
             st.session_state["failures"] = failures
             st.session_state["scan_date"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            scan_basis = snapshot[[c for c in ["Symbol", "Date", "Close"] if c in snapshot.columns]].copy()
+            scan_id = "scan-" + hashlib.sha256(scan_basis.to_csv(index=False).encode()).hexdigest()[:16]
+            _invalidate_strategy_state(scan_id)
+            st.session_state["scan_id"] = scan_id
 
             progress.empty()
             status.empty()
@@ -811,6 +842,17 @@ def strategy_page(strategy: str):
         st.plotly_chart(market_chart(frame,chosen,overlays,rsi_col="RSI14",days=int(chart_days),cross_columns=crosses,rsi_lines=levels),use_container_width=True,config={"displaylogo":False,"scrollZoom":True})
 
 
+def _ai_register_strategy_output(strategy_name, frame, metadata=None):
+    """Central, exact strategy registry for the AI layer."""
+    if "ai_strategy_registry" not in st.session_state:
+        st.session_state["ai_strategy_registry"] = {}
+
+    st.session_state["ai_strategy_registry"][strategy_name] = {
+        "frame": frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame(),
+        "metadata": metadata or {},
+    }
+
+
 def convergence_page():
     require_scan()
     df=st.session_state["convergence"].copy()
@@ -831,6 +873,14 @@ def convergence_page():
     output=df.loc[(df["ConvergenceScore"]>=min_score)&(df["Setup"]!="No active setup")].copy()
     if setup_filter!="All": output=output.loc[output["Setup"]==setup_filter]
     st.session_state["ai_confluence_output"] = output.copy()
+    _ai_register_strategy_output(
+        "confluence",
+        output,
+        {
+            "minimum_score": float(min_score),
+            "setup_filter": setup_filter,
+        },
+    )
     cols=["Symbol","Company","Setup","Close","ConvergenceScore","TrendContinuationScore","PullbackScore","FreshMomentumScore","BreakoutScore","RS3MPct","VolumeRatio","LiquidityBucket","ATRPercent","RSI14","EMA255DistancePct"]
     output=output[cols].copy().reset_index(drop=True)
     output.insert(0,"Rank",range(1,len(output)+1))
@@ -843,6 +893,219 @@ def convergence_page():
         row=df.loc[df["Symbol"]==selected].iloc[0]
         frame=st.session_state["indicators"].loc[st.session_state["indicators"]["Yahoo Symbol"]==row["Yahoo Symbol"]].copy()
         st.plotly_chart(market_chart(frame,selected,["EMA9","EMA21","SMA20","SMA50","SMA200","EMA255"],rsi_col="RSI14",days=252,cross_columns=["Cross9_21","Cross20_50","Cross50_200"],rsi_lines=[(30,"RSI 30"),(35,"BUY ZONE 35"),(50,"RSI 50"),(70,"RSI 70")]),use_container_width=True,config={"displaylogo":False,"scrollZoom":True})
+
+
+def _current_scan_id():
+    """Stable identity for the current scan. Prevents stale strategy outputs."""
+    existing = st.session_state.get("scan_id")
+    if existing:
+        return str(existing)
+    snapshot = st.session_state.get("snapshot")
+    if isinstance(snapshot, pd.DataFrame) and not snapshot.empty:
+        basis = snapshot[[c for c in ["Symbol", "Date", "Close"] if c in snapshot.columns]].copy()
+        digest = hashlib.sha256(basis.to_csv(index=False).encode()).hexdigest()[:16]
+        return f"scan-{digest}"
+    return "no-scan"
+
+
+def _invalidate_strategy_state(scan_id):
+    """Drop all strategy/AI artifacts that belong to an older scan."""
+    st.session_state["ai_strategy_registry"] = {}
+    for key in [
+        "ai_confluence_output", "ai_final_buy_output", "ai_emerging_working",
+        "ai_emerging_buy_output", "ai_final_buy_cache", "ai_emerging_cache",
+        "buy_fundamentals_cache", "emerging_fundamentals_cache",
+    ]:
+        st.session_state.pop(key, None)
+    st.session_state["strategy_scan_id"] = scan_id
+
+
+def _strategy_cache_valid(cache):
+    return isinstance(cache, dict) and cache.get("scan_id") == _current_scan_id()
+
+
+def _fundamental_for_scan(namespace, yahoo_symbol):
+    scan_id = _current_scan_id()
+    cache = st.session_state.setdefault(namespace, {})
+    key = f"{scan_id}|{yahoo_symbol}"
+    if key not in cache:
+        try:
+            result = fundamental_snapshot(yahoo_symbol)
+            cache[key] = result if isinstance(result, dict) else {}
+        except Exception:
+            cache[key] = {}
+    return cache[key]
+
+
+def build_ai_confluence_pool(convergence=None):
+    """Canonical AI Confluence pool. 75+ and an active setup only."""
+    if convergence is None:
+        convergence = st.session_state.get("convergence")
+    if not isinstance(convergence, pd.DataFrame) or convergence.empty:
+        return pd.DataFrame()
+    score = pd.to_numeric(convergence.get("ConvergenceScore"), errors="coerce")
+    setup = convergence.get("Setup", pd.Series("No active setup", index=convergence.index))
+    return convergence.loc[
+        (score >= AI_STRATEGY_PREFILTER_SCORE)
+        & setup.astype(str).ne("No active setup")
+    ].copy().reset_index(drop=True)
+
+
+def build_final_buy_list(
+    convergence=None,
+    min_score=AI_DEFAULT_FINAL_BUY_CONVICTION,
+    use_liquidity=AI_DEFAULT_FINAL_BUY_LIQUIDITY,
+    prefilter_score=None,
+):
+    """Shared Final Buy List engine used by both the page and AI verification."""
+    if convergence is None:
+        convergence = st.session_state.get("convergence")
+    if not isinstance(convergence, pd.DataFrame) or convergence.empty:
+        return pd.DataFrame()
+
+    source = convergence.copy()
+    if prefilter_score is not None:
+        source = build_ai_confluence_pool(source)
+
+    technical = investor_quality_gate(source)
+    if use_liquidity and not technical.empty:
+        technical = technical.loc[technical["LiquidityEligible"].fillna(False)].copy()
+    if technical.empty:
+        return pd.DataFrame()
+
+    finalists = technical.head(AI_FUNDAMENTAL_FETCH_LIMIT).copy()
+    rows = []
+    for _, row in finalists.iterrows():
+        fund = _fundamental_for_scan("buy_fundamentals_cache", row.get("Yahoo Symbol"))
+        market_cap = pd.to_numeric(fund.get("Market Cap"), errors="coerce")
+        revenue_growth = pd.to_numeric(fund.get("Revenue Growth %"), errors="coerce")
+        margin = pd.to_numeric(fund.get("Profit Margin %"), errors="coerce")
+        debt_equity = pd.to_numeric(fund.get("Debt/Equity"), errors="coerce")
+        pe = pd.to_numeric(fund.get("PE"), errors="coerce")
+        fundamental_score = (
+            (2 if pd.notna(market_cap) and market_cap >= 5_00_00_00_000 else 0)
+            + (2 if pd.notna(revenue_growth) and revenue_growth > 0 else 0)
+            + (2 if pd.notna(margin) and margin > 0 else 0)
+            + (2 if pd.notna(debt_equity) and 0 <= debt_equity <= 2.5 else 0)
+            + (2 if pd.notna(pe) and 0 < pe <= 60 else 0)
+        )
+        conviction = float(row["InvestorTechnicalScore"]) * 0.90 + fundamental_score
+        rows.append({
+            "Symbol": row.get("Symbol"), "Company": row.get("Company"), "Setup": row.get("Setup"),
+            "Investor Conviction": round(conviction, 1),
+            "Technical Quality": round(float(row["InvestorTechnicalScore"]), 1),
+            "Confluence": int(pd.to_numeric(row.get("ConvergenceScore"), errors="coerce")),
+            "RS 3M %ile": round(float(row["RS3MPct"]), 1) if pd.notna(row.get("RS3MPct")) else None,
+            "RS 6M %ile": round(float(row["RS6MPct"]), 1) if pd.notna(row.get("RS6MPct")) else None,
+            "Volume x": round(float(row["VolumeRatio"]), 2) if pd.notna(row.get("VolumeRatio")) else None,
+            "Liquidity": row.get("LiquidityBucket"),
+            "RSI": round(float(row["RSI14"]), 2) if pd.notna(row.get("RSI14")) else None,
+            "ATR %": round(float(row["ATRPercent"]), 2) if pd.notna(row.get("ATRPercent")) else None,
+            "Gap %": round(float(row["GapPct"]), 2) if pd.notna(row.get("GapPct")) else None,
+            "P/E": fund.get("PE"), "Revenue Growth %": fund.get("Revenue Growth %"),
+            "Net Profit Margin %": fund.get("Profit Margin %"), "Debt/Equity": fund.get("Debt/Equity"),
+            "EV/EBITDA": fund.get("EV/EBITDA"), "Market Cap": fund.get("Market Cap"),
+            "Yahoo Symbol": row.get("Yahoo Symbol"),
+        })
+    final = pd.DataFrame(rows)
+    if final.empty:
+        return final
+    for col in ["Investor Conviction", "Technical Quality"]:
+        final[col] = pd.to_numeric(final[col], errors="coerce")
+    final = final.loc[final["Investor Conviction"] >= float(min_score)].sort_values(
+        ["Investor Conviction", "Technical Quality", "RS 3M %ile"], ascending=False, na_position="last"
+    ).reset_index(drop=True)
+    if not final.empty:
+        final.insert(0, "Rank", range(1, len(final) + 1))
+    return final
+
+
+def _build_emerging_scored(snapshot=None):
+    """Shared Emerging scoring engine. No UI and no navigation dependency."""
+    if snapshot is None:
+        snapshot = st.session_state.get("snapshot")
+    if not isinstance(snapshot, pd.DataFrame) or snapshot.empty or "DataQualityStatus" not in snapshot.columns:
+        return pd.DataFrame()
+    working = snapshot.loc[snapshot["DataQualityStatus"].astype(str).str.strip().eq("Insufficient history")].copy()
+    if working.empty:
+        return working
+
+    def num(frame, col):
+        return pd.to_numeric(frame[col], errors="coerce") if col in frame.columns else pd.Series(float("nan"), index=frame.index)
+    score = pd.Series(0.0, index=working.index)
+    for col, pts in [("BullMomentum",15),("BullSwing",15),("MomentumFresh",10),("VolumeConfirmedMomentum",10),("Breakout20",10)]:
+        if col in working.columns:
+            score += working[col].fillna(False).astype(bool).astype(float) * pts
+    score += num(working,"RS3MPct").clip(0,100).fillna(0) * 0.15
+    rsi = num(working,"RSI14")
+    score += pd.Series(0.0,index=working.index).mask(rsi.between(50,70),5.0).mask(rsi.between(45,49.999999),3.0).mask(rsi.between(40,44.999999),1.0).mask(rsi.between(70.000001,75),3.0).fillna(0)
+    working["Technical Score"] = score.clip(0,80).round(1)
+    for col in ["Fundamental Score","Fundamental Coverage"]: working[col]=0.0
+    working["Fundamental Coverage"] = 0
+    for col in ["Revenue Growth %","Profit Margin %","Debt/Equity","P/E","EV/EBITDA","Market Cap"]: working[col]=float("nan")
+    candidates = working.sort_values(["Technical Score","RS3MPct","VolumeRatio"],ascending=False,na_position="last").head(AI_FUNDAMENTAL_FETCH_LIMIT)
+    for idx,row in candidates.iterrows():
+        fund = _fundamental_for_scan("emerging_fundamentals_cache", row.get("Yahoo Symbol"))
+        vals={
+            "Revenue Growth %":pd.to_numeric(fund.get("Revenue Growth %"),errors="coerce"),
+            "Profit Margin %":pd.to_numeric(fund.get("Profit Margin %"),errors="coerce"),
+            "Debt/Equity":pd.to_numeric(fund.get("Debt/Equity"),errors="coerce"),
+            "P/E":pd.to_numeric(fund.get("PE"),errors="coerce"),
+            "EV/EBITDA":pd.to_numeric(fund.get("EV/EBITDA"),errors="coerce"),
+            "Market Cap":pd.to_numeric(fund.get("Market Cap"),errors="coerce"),
+        }
+        rg,mg,de,pe,ev=vals["Revenue Growth %"],vals["Profit Margin %"],vals["Debt/Equity"],vals["P/E"],vals["EV/EBITDA"]
+        fscore=(5 if pd.notna(rg) and rg>=15 else 3.5 if pd.notna(rg) and rg>0 else 1.5 if pd.notna(rg) and rg>-10 else 0)+(5 if pd.notna(mg) and mg>=15 else 3.5 if pd.notna(mg) and mg>0 else 1 if pd.notna(mg) and mg>-5 else 0)+(4 if pd.notna(de) and 0<=de<=1 else 3 if pd.notna(de) and de<=2 else 1.5 if pd.notna(de) and de<=3 else 0)+(3 if pd.notna(pe) and 0<pe<=30 else 2 if pd.notna(pe) and pe<=50 else 1 if pd.notna(pe) and pe<=75 else 0)+(3 if pd.notna(ev) and 0<ev<=20 else 2 if pd.notna(ev) and ev<=30 else 1 if pd.notna(ev) and ev<=50 else 0)
+        for k,v in vals.items(): working.at[idx,k]=v
+        working.at[idx,"Fundamental Score"]=round(min(fscore,20.0),1)
+        working.at[idx,"Fundamental Coverage"]=sum(pd.notna(vals[k]) for k in ["Revenue Growth %","Profit Margin %","Debt/Equity","P/E","EV/EBITDA"])
+    working["Emerging Score"]=(working["Technical Score"]+working["Fundamental Score"]).clip(0,100).round(1)
+    def label(r):
+        m=bool(r.get("BullMomentum",False)); sw=bool(r.get("BullSwing",False)); fr=bool(r.get("MomentumFresh",False)); br=bool(r.get("Breakout20",False)); vo=bool(r.get("VolumeConfirmedMomentum",False))
+        if br and vo and m:return "Trend + Volume Breakout"
+        if m and sw and fr:return "Fresh Momentum + Swing"
+        if m and sw:return "Momentum + Swing"
+        if br:return "Breakout Watch"
+        if m:return "Momentum Watch"
+        if sw:return "Swing Watch"
+        return "Early Watch"
+    working["Setup"]=working.apply(label,axis=1)
+    return working
+
+
+def build_emerging_buy_list(working):
+    if not isinstance(working,pd.DataFrame) or working.empty:return pd.DataFrame()
+    num=lambda c: pd.to_numeric(working[c],errors="coerce") if c in working.columns else pd.Series(float("nan"),index=working.index)
+    buy=working.loc[num("Emerging Score")>=75].copy()
+    buy=buy.loc[pd.to_numeric(buy["Technical Score"],errors="coerce")>=58].copy()
+    buy=buy.loc[(pd.to_numeric(buy["RS3MPct"],errors="coerce") if "RS3MPct" in buy.columns else pd.Series(float("nan"),index=buy.index))>=70].copy()
+    momentum=buy.get("BullMomentum",pd.Series(False,index=buy.index)).fillna(False).astype(bool)
+    swing=buy.get("BullSwing",pd.Series(False,index=buy.index)).fillna(False).astype(bool)
+    buy=buy.loc[momentum|swing].copy()
+    buy=buy.loc[pd.to_numeric(buy["Fundamental Coverage"],errors="coerce")>=3].copy()
+    buy=buy.loc[pd.to_numeric(buy["Fundamental Score"],errors="coerce")>=9].copy()
+    traded=pd.to_numeric(buy["AvgTradedValue20"],errors="coerce") if "AvgTradedValue20" in buy.columns else pd.Series(0,index=buy.index)
+    buy=buy.loc[traded.fillna(0)>=1_00_00_000].copy()
+    return buy.sort_values(["Emerging Score","Fundamental Score","Technical Score","RS3MPct"],ascending=False,na_position="last").reset_index(drop=True)
+
+
+def _ensure_ai_strategy_outputs():
+    """Self-sufficient AI strategy build for the current scan only."""
+    scan_id=_current_scan_id()
+    registry=st.session_state.get("ai_strategy_registry",{})
+    if not isinstance(registry,dict) or st.session_state.get("strategy_scan_id")!=scan_id:
+        _invalidate_strategy_state(scan_id)
+        registry={}
+    convergence=st.session_state.get("convergence")
+    confluence=build_ai_confluence_pool(convergence)
+    final=build_final_buy_list(convergence,AI_DEFAULT_FINAL_BUY_CONVICTION,AI_DEFAULT_FINAL_BUY_LIQUIDITY,prefilter_score=AI_STRATEGY_PREFILTER_SCORE)
+    emerging=_build_emerging_scored(st.session_state.get("snapshot"))
+    emerging_buy=build_emerging_buy_list(emerging)
+    _ai_register_strategy_output("confluence",confluence,{"minimum_score":AI_STRATEGY_PREFILTER_SCORE,"canonical_ai_pool":True,"scan_id":scan_id})
+    _ai_register_strategy_output("final_buy_list",final,{"minimum_investor_conviction":AI_DEFAULT_FINAL_BUY_CONVICTION,"use_liquidity_filter":AI_DEFAULT_FINAL_BUY_LIQUIDITY,"prefilter_score":AI_STRATEGY_PREFILTER_SCORE,"canonical_ai_pool":True,"scan_id":scan_id})
+    _ai_register_strategy_output("emerging_setups",emerging,{"scan_id":scan_id})
+    _ai_register_strategy_output("emerging_buy_list",emerging_buy,{"scan_id":scan_id})
+    st.session_state["ai_confluence_output"]=confluence.copy(); st.session_state["ai_final_buy_output"]=final.copy(); st.session_state["ai_emerging_working"]=emerging.copy(); st.session_state["ai_emerging_buy_output"]=emerging_buy.copy()
 
 
 def buying_list_page():
@@ -888,168 +1151,36 @@ def buying_list_page():
         help="Optional. Uses the existing 20-day average traded-value threshold.",
     )
 
+    with st.spinner("Building the Final Buy List from the current scan..."):
+        final = build_final_buy_list(
+            df,
+            min_score=min_score,
+            use_liquidity=use_liquidity,
+            prefilter_score=None,
+        )
+
+    if final.empty:
+        st.info(
+            "No technically and fundamentally strong candidates cleared the current Final Buy List rules."
+        )
+        return
+
     technical = investor_quality_gate(df)
-
     if use_liquidity and not technical.empty:
-        technical = technical.loc[
-            technical["LiquidityEligible"].fillna(False)
-        ].copy()
+        technical = technical.loc[technical["LiquidityEligible"].fillna(False)].copy()
+    fundamental_fetch_limit = AI_FUNDAMENTAL_FETCH_LIMIT
 
-    if technical.empty:
-        st.info(
-            "No candidates currently pass the strict investor-quality gate. "
-            "That is acceptable. The model does not force a shortlist."
-        )
-        return
-
-    # Infrastructure cap only. This is NOT a cap on the number of final picks.
-    # Fundamentals are the expensive/public-data step and are fetched only for
-    # the strongest technical candidates to protect Streamlit Cloud limits.
-    fundamental_fetch_limit = 25
-    finalists_for_fundamentals = technical.head(
-        fundamental_fetch_limit
-    ).copy()
-
-    rows = []
-    with st.spinner(
-        f"Fetching fundamentals for {len(finalists_for_fundamentals)} technical finalists..."
-    ):
-        for _, row in finalists_for_fundamentals.iterrows():
-            fund = fundamental_snapshot(row["Yahoo Symbol"])
-
-            fundamental_score = 0.0
-
-            market_cap = pd.to_numeric(
-                fund.get("Market Cap"),
-                errors="coerce",
-            )
-            revenue_growth = pd.to_numeric(
-                fund.get("Revenue Growth %"),
-                errors="coerce",
-            )
-            margin = pd.to_numeric(
-                fund.get("Profit Margin %"),
-                errors="coerce",
-            )
-            debt_equity = pd.to_numeric(
-                fund.get("Debt/Equity"),
-                errors="coerce",
-            )
-            pe = pd.to_numeric(
-                fund.get("PE"),
-                errors="coerce",
-            )
-
-            # Missing public fundamentals are neutral, not an automatic fail.
-            fundamental_score += (
-                2 if pd.notna(market_cap) and market_cap >= 5_00_00_00_000 else 0
-            )
-            fundamental_score += (
-                2 if pd.notna(revenue_growth) and revenue_growth > 0 else 0
-            )
-            fundamental_score += (
-                2 if pd.notna(margin) and margin > 0 else 0
-            )
-            fundamental_score += (
-                2 if pd.notna(debt_equity) and 0 <= debt_equity <= 2.5 else 0
-            )
-            fundamental_score += (
-                2 if pd.notna(pe) and 0 < pe <= 60 else 0
-            )
-
-            investor_conviction = (
-                float(row["InvestorTechnicalScore"]) * 0.90
-                + fundamental_score
-            )
-
-            rows.append(
-                {
-                    "Symbol": row["Symbol"],
-                    "Company": row["Company"],
-                    "Setup": row["Setup"],
-                    "Investor Conviction": round(investor_conviction, 1),
-                    "Technical Quality": round(
-                        float(row["InvestorTechnicalScore"]), 1
-                    ),
-                    "Confluence": int(row["ConvergenceScore"]),
-                    "RS 3M %ile": (
-                        round(float(row["RS3MPct"]), 1)
-                        if pd.notna(row["RS3MPct"])
-                        else None
-                    ),
-                    "RS 6M %ile": (
-                        round(float(row["RS6MPct"]), 1)
-                        if pd.notna(row["RS6MPct"])
-                        else None
-                    ),
-                    "Volume x": (
-                        round(float(row["VolumeRatio"]), 2)
-                        if pd.notna(row["VolumeRatio"])
-                        else None
-                    ),
-                    "Liquidity": row["LiquidityBucket"],
-                    "RSI": (
-                        round(float(row["RSI14"]), 2)
-                        if pd.notna(row["RSI14"])
-                        else None
-                    ),
-                    "ATR %": (
-                        round(float(row["ATRPercent"]), 2)
-                        if pd.notna(row["ATRPercent"])
-                        else None
-                    ),
-                    "Gap %": (
-                        round(float(row["GapPct"]), 2)
-                        if pd.notna(row["GapPct"])
-                        else None
-                    ),
-                    "P/E": fund["PE"],
-                    "Revenue Growth %": fund["Revenue Growth %"],
-                    "Net Profit Margin %": fund["Profit Margin %"],
-                    "Debt/Equity": fund["Debt/Equity"],
-                    "EV/EBITDA": fund["EV/EBITDA"],
-                    "Market Cap": fund["Market Cap"],
-                    "Yahoo Symbol": row["Yahoo Symbol"],
-                }
-            )
-
-    final = pd.DataFrame(rows)
-
-    if final.empty:
-        st.info("No candidates were enriched successfully.")
-        return
-
-    final["Investor Conviction"] = pd.to_numeric(
-        final["Investor Conviction"],
-        errors="coerce",
-    )
-    final["Technical Quality"] = pd.to_numeric(
-        final["Technical Quality"],
-        errors="coerce",
-    )
-
-    # Score threshold, not stock count, determines the final list.
-    final = (
-        final.loc[
-            final["Investor Conviction"] >= min_score
-        ]
-        .sort_values(
-            ["Investor Conviction", "Technical Quality", "RS 3M %ile"],
-            ascending=False,
-            na_position="last",
-        )
-        .reset_index(drop=True)
-    )
-
-    if final.empty:
-        st.info(
-            "No technically and fundamentally strong candidates cleared "
-            f"the Investor Conviction threshold of {min_score:.0f}."
-        )
-        return
-
-    final.insert(0, "Rank", range(1, len(final) + 1))
     st.session_state["ai_final_buy_output"] = final.copy()
+    _ai_register_strategy_output(
+        "final_buy_list",
+        final,
+        {
+            "minimum_investor_conviction": float(min_score),
+            "use_liquidity_filter": bool(use_liquidity),
+            "scan_id": _current_scan_id(),
+            "canonical_ai_pool": False,
+        },
+    )
 
     for col in [
         "P/E",
@@ -1271,177 +1402,24 @@ not a guaranteed buy signal.
         )
         return
 
+    with st.spinner("Scoring emerging candidates from the current scan..."):
+        working = _build_emerging_scored(snapshot)
+
+    if working.empty:
+        st.info("There are currently no emerging candidates after scoring the latest market snapshot.")
+        return
+
+    st.session_state["ai_emerging_working"] = working.copy()
+    _ai_register_strategy_output(
+        "emerging_setups",
+        working,
+        {"scan_id": _current_scan_id()},
+    )
+
     def numeric_series(frame, column):
         if column in frame.columns:
             return pd.to_numeric(frame[column], errors="coerce")
         return pd.Series(float("nan"), index=frame.index)
-
-    # -----------------------------
-    # Technical score: 80 points.
-    # -----------------------------
-    score = pd.Series(0.0, index=working.index)
-
-    def add_bool_score(column, points):
-        nonlocal score
-        if column in working.columns:
-            values = working[column].fillna(False).astype(bool).astype(float)
-            score += values * points
-
-    add_bool_score("BullMomentum", 15)
-    add_bool_score("BullSwing", 15)
-    add_bool_score("MomentumFresh", 10)
-    add_bool_score("VolumeConfirmedMomentum", 10)
-    add_bool_score("Breakout20", 10)
-
-    rs3 = numeric_series(working, "RS3MPct").clip(0, 100)
-    score += rs3.fillna(0) * 0.15
-
-    rsi = numeric_series(working, "RSI14")
-    rsi_points = pd.Series(0.0, index=working.index)
-    rsi_points.loc[rsi.between(50, 70, inclusive="both")] = 5.0
-    rsi_points.loc[rsi.between(45, 49.999999, inclusive="both")] = 3.0
-    rsi_points.loc[rsi.between(40, 44.999999, inclusive="both")] = 1.0
-    # A moderately high RSI can still be constructive, but an extreme RSI
-    # receives no bonus because the screen is intended to avoid chasing.
-    rsi_points.loc[rsi.between(70.000001, 75, inclusive="both")] = 3.0
-    score += rsi_points
-
-    working["Technical Score"] = score.clip(0, 80).round(1)
-
-    # -----------------------------------------
-    # Fundamentals: up to 20 points.
-    # -----------------------------------------
-    # Fundamental data is the expensive public-data step. Fetch it only for
-    # the strongest technical candidates, then cache it for this scan session.
-    working["Fundamental Score"] = 0.0
-    working["Fundamental Coverage"] = 0
-    working["Revenue Growth %"] = float("nan")
-    working["Profit Margin %"] = float("nan")
-    working["Debt/Equity"] = float("nan")
-    working["P/E"] = float("nan")
-    working["EV/EBITDA"] = float("nan")
-    working["Market Cap"] = float("nan")
-
-    technical_order = working.sort_values(
-        ["Technical Score", "RS3MPct", "VolumeRatio"],
-        ascending=False,
-        na_position="last",
-    )
-    fundamental_fetch_limit = 25
-    fundamental_candidates = technical_order.head(fundamental_fetch_limit)
-
-    cache = st.session_state.setdefault("emerging_fundamentals_cache", {})
-    scan_key = str(st.session_state.get("scan_date", "current"))
-
-    def get_fundamentals(yahoo_symbol):
-        cache_key = f"{scan_key}|{yahoo_symbol}"
-        if cache_key not in cache:
-            try:
-                result = fundamental_snapshot(yahoo_symbol)
-                cache[cache_key] = result if isinstance(result, dict) else {}
-            except Exception:
-                cache[cache_key] = {}
-        return cache[cache_key]
-
-    with st.spinner(
-        f"Checking public fundamentals for up to {len(fundamental_candidates)} emerging candidates..."
-    ):
-        for idx, row in fundamental_candidates.iterrows():
-            fund = get_fundamentals(row.get("Yahoo Symbol"))
-
-            market_cap = pd.to_numeric(fund.get("Market Cap"), errors="coerce")
-            revenue_growth = pd.to_numeric(fund.get("Revenue Growth %"), errors="coerce")
-            margin = pd.to_numeric(fund.get("Profit Margin %"), errors="coerce")
-            debt_equity = pd.to_numeric(fund.get("Debt/Equity"), errors="coerce")
-            pe = pd.to_numeric(fund.get("PE"), errors="coerce")
-            ev_ebitda = pd.to_numeric(fund.get("EV/EBITDA"), errors="coerce")
-
-            # 5 pts growth. Positive growth is useful; stronger growth earns more.
-            growth_points = (
-                5.0 if pd.notna(revenue_growth) and revenue_growth >= 15 else
-                3.5 if pd.notna(revenue_growth) and revenue_growth > 0 else
-                1.5 if pd.notna(revenue_growth) and revenue_growth > -10 else
-                0.0
-            )
-            # 5 pts profitability. Positive margin is preferable to losses.
-            margin_points = (
-                5.0 if pd.notna(margin) and margin >= 15 else
-                3.5 if pd.notna(margin) and margin > 0 else
-                1.0 if pd.notna(margin) and margin > -5 else
-                0.0
-            )
-            # 4 pts leverage. Lower debt/equity is preferred, while missing data is neutral.
-            leverage_points = (
-                4.0 if pd.notna(debt_equity) and 0 <= debt_equity <= 1 else
-                3.0 if pd.notna(debt_equity) and debt_equity <= 2 else
-                1.5 if pd.notna(debt_equity) and debt_equity <= 3 else
-                0.0
-            )
-            # 3 pts P/E. Positive and not excessively high gets the strongest score.
-            pe_points = (
-                3.0 if pd.notna(pe) and 0 < pe <= 30 else
-                2.0 if pd.notna(pe) and pe <= 50 else
-                1.0 if pd.notna(pe) and pe <= 75 else
-                0.0
-            )
-            # 3 pts EV/EBITDA. Same principle, with a wider range for growth stocks.
-            ev_points = (
-                3.0 if pd.notna(ev_ebitda) and 0 < ev_ebitda <= 20 else
-                2.0 if pd.notna(ev_ebitda) and ev_ebitda <= 30 else
-                1.0 if pd.notna(ev_ebitda) and ev_ebitda <= 50 else
-                0.0
-            )
-
-            fundamental_score = growth_points + margin_points + leverage_points + pe_points + ev_points
-            values = {
-                "Revenue Growth %": revenue_growth,
-                "Profit Margin %": margin,
-                "Debt/Equity": debt_equity,
-                "P/E": pe,
-                "EV/EBITDA": ev_ebitda,
-                "Market Cap": market_cap,
-            }
-            # Fundamental coverage counts only the five scored quality fields.
-            # Market Cap is always available/informational and is not scored.
-            scored_values = {
-                "Revenue Growth %": revenue_growth,
-                "Profit Margin %": margin,
-                "Debt/Equity": debt_equity,
-                "P/E": pe,
-                "EV/EBITDA": ev_ebitda,
-            }
-            coverage = sum(pd.notna(v) for v in scored_values.values())
-            for key, value in values.items():
-                working.at[idx, key] = value
-            working.at[idx, "Fundamental Score"] = round(min(fundamental_score, 20.0), 1)
-            working.at[idx, "Fundamental Coverage"] = coverage
-
-    working["Emerging Score"] = (
-        working["Technical Score"] + working["Fundamental Score"]
-    ).clip(0, 100).round(1)
-
-    def setup_label(row):
-        momentum = bool(row.get("BullMomentum", False))
-        swing = bool(row.get("BullSwing", False))
-        fresh = bool(row.get("MomentumFresh", False))
-        breakout = bool(row.get("Breakout20", False))
-        volume = bool(row.get("VolumeConfirmedMomentum", False))
-        if breakout and volume and momentum:
-            return "Trend + Volume Breakout"
-        if momentum and swing and fresh:
-            return "Fresh Momentum + Swing"
-        if momentum and swing:
-            return "Momentum + Swing"
-        if breakout:
-            return "Breakout Watch"
-        if momentum:
-            return "Momentum Watch"
-        if swing:
-            return "Swing Watch"
-        return "Early Watch"
-
-    working["Setup"] = working.apply(setup_label, axis=1)
-    st.session_state["ai_emerging_working"] = working.copy()
 
     # -----------------------------
     # Controls.
@@ -1551,26 +1529,13 @@ not a guaranteed buy signal.
         "Strict research shortlist. This is deliberately harder to pass than the discovery table and is not an automated investment recommendation."
     )
 
-    buy = working.copy()
-    buy = buy.loc[buy["Emerging Score"] >= 75].copy()
-    buy = buy.loc[buy["Technical Score"] >= 58].copy()
-    buy = buy.loc[numeric_series(buy, "RS3MPct") >= 70].copy()
-    buy = buy.loc[
-        buy.get("BullMomentum", pd.Series(False, index=buy.index)).fillna(False).astype(bool)
-        | buy.get("BullSwing", pd.Series(False, index=buy.index)).fillna(False).astype(bool)
-    ].copy()
-    # Require at least 3 of the 5 scored fundamental fields.
-    # Market Cap is excluded because it is informational and not scored.
-    buy = buy.loc[buy["Fundamental Coverage"] >= 3].copy()
-    buy = buy.loc[buy["Fundamental Score"] >= 9].copy()
-    buy = buy.loc[numeric_series(buy, "AvgTradedValue20").fillna(0) >= 1_00_00_000].copy()
-
-    buy = buy.sort_values(
-        ["Emerging Score", "Fundamental Score", "Technical Score", "RS3MPct"],
-        ascending=False,
-        na_position="last",
-    )
+    buy = build_emerging_buy_list(working)
     st.session_state["ai_emerging_buy_output"] = buy.copy()
+    _ai_register_strategy_output(
+        "emerging_buy_list",
+        buy,
+        {"scan_id": _current_scan_id()},
+    )
 
     b1, b2, b3 = st.columns(3)
     b1.metric("EMERGING BUY CANDIDATES", f"{len(buy):,}")
@@ -1677,6 +1642,12 @@ normal scanner and be evaluated by the full Confluence and Final Buy List logic.
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+# AI verification prefilter. This does not change the visible strategy rules.
+AI_STRATEGY_PREFILTER_SCORE = 75
+AI_DEFAULT_FINAL_BUY_CONVICTION = 78
+AI_DEFAULT_FINAL_BUY_LIQUIDITY = True
+AI_FUNDAMENTAL_FETCH_LIMIT = 25
+
 
 def _ai_chart_png(frame, symbol):
     if frame is None or frame.empty:
@@ -1738,42 +1709,46 @@ def _ai_find_row(frame, symbol):
     return rows.iloc[0] if not rows.empty else None
 
 
+def _ai_registered_strategy_frame(strategy_name, legacy_key=None):
+    registry = st.session_state.get("ai_strategy_registry", {})
+    entry = registry.get(strategy_name, {}) if isinstance(registry, dict) else {}
+    metadata = entry.get("metadata", {}) if isinstance(entry, dict) else {}
+    frame = entry.get("frame") if isinstance(entry, dict) else None
+    if metadata.get("scan_id") == _current_scan_id() and isinstance(frame, pd.DataFrame):
+        return frame, metadata
+    return None, {}
+
+
 def _ai_strategy_status(symbol, snapshot_row):
-    """Tell AI exactly where the stock sits in the current terminal."""
+    """Exact membership from the current scan. Never inferred by Gemini or navigation order."""
+    _ensure_ai_strategy_outputs()
     status = {
-        "confluence": {"member": False, "reason": None, "details": {}},
-        "final_buy_list": {
-            "member": False,
-            "verified": False,
-            "reason": None,
-            "details": {},
-        },
-        "emerging_setups": {"member": False, "reason": None, "details": {}},
-        "emerging_buy_list": {
-            "member": False,
-            "verified": False,
-            "reason": None,
-            "details": {},
-        },
+        "confluence": {"member": False, "verified": False, "reason": None, "details": {}},
+        "final_buy_list": {"member": False, "verified": False, "reason": None, "details": {}},
+        "emerging_setups": {"member": False, "verified": False, "reason": None, "details": {}},
+        "emerging_buy_list": {"member": False, "verified": False, "reason": None, "details": {}},
     }
 
-    # Confluence can always be verified directly from the current scan output.
-    convergence = st.session_state.get("convergence")
-    row = _ai_find_row(convergence, symbol)
+    # Confluence. Prefer the exact filtered output currently shown in the app.
+    confluence_frame, confluence_meta = _ai_registered_strategy_frame(
+        "confluence",
+        "ai_confluence_output",
+    )
+    row = _ai_find_row(confluence_frame, symbol)
     if row is not None:
-        setup = str(row.get("Setup", "No active setup"))
+        setup = str(row.get("Setup", "Active setup"))
         score = pd.to_numeric(row.get("ConvergenceScore"), errors="coerce")
-        active = setup != "No active setup" and pd.notna(score)
         status["confluence"] = {
-            "member": bool(active),
+            "member": True,
+            "verified": True,
             "reason": (
-                f"Current setup: {setup}. Confluence score: {float(score):.1f}."
-                if active else
-                "The stock does not currently have an active Confluence setup."
+                f"Currently in the Confluence output. Setup: {setup}. "
+                f"Confluence score: {float(score):.1f}."
             ),
             "details": {
                 "setup": setup,
                 "confluence_score": _ai_json_value(score),
+                "minimum_score_used": confluence_meta.get("minimum_score"),
                 "trend_score": _ai_json_value(row.get("TrendContinuationScore")),
                 "pullback_score": _ai_json_value(row.get("PullbackScore")),
                 "fresh_momentum_score": _ai_json_value(row.get("FreshMomentumScore")),
@@ -1781,97 +1756,100 @@ def _ai_strategy_status(symbol, snapshot_row):
             },
         }
 
-    # Exact Final Buy List membership is available once that page has generated it.
-    final = st.session_state.get("ai_final_buy_output")
-    row = _ai_find_row(final, symbol)
+    # Final Buy List. This is the exact table, including rank and live threshold.
+    final_frame, final_meta = _ai_registered_strategy_frame(
+        "final_buy_list",
+        "ai_final_buy_output",
+    )
+    row = _ai_find_row(final_frame, symbol)
     if row is not None:
+        setup = str(row.get("Setup", "Current setup"))
+        conviction = _ai_json_value(row.get("Investor Conviction"))
+        technical_quality = _ai_json_value(row.get("Technical Quality"))
+        confluence_score = _ai_json_value(row.get("Confluence"))
+        rs3 = _ai_json_value(row.get("RS 3M %ile"))
+        volume = _ai_json_value(row.get("Volume x"))
+        liquidity = _ai_json_value(row.get("Liquidity"))
+
+        reason_parts = [
+            "Currently in the Final Buy List",
+            f"Rank {row.get('Rank')}" if pd.notna(row.get("Rank")) else None,
+            f"Setup: {setup}",
+            f"Investor Conviction: {conviction}" if conviction is not None else None,
+            f"Technical Quality: {technical_quality}" if technical_quality is not None else None,
+            f"Confluence: {confluence_score}" if confluence_score is not None else None,
+        ]
+        reason = ". ".join(str(x) for x in reason_parts if x) + "."
+
         status["final_buy_list"] = {
             "member": True,
             "verified": True,
-            "reason": "The stock currently clears the Final Buy List filters.",
+            "reason": reason,
             "details": {
                 "rank": _ai_json_value(row.get("Rank")),
-                "investor_conviction": _ai_json_value(row.get("Investor Conviction")),
-                "technical_quality": _ai_json_value(row.get("Technical Quality")),
-                "confluence": _ai_json_value(row.get("Confluence")),
-                "setup": _ai_json_value(row.get("Setup")),
+                "setup": setup,
+                "investor_conviction": conviction,
+                "technical_quality": technical_quality,
+                "confluence": confluence_score,
+                "rs_3m_percentile": rs3,
+                "rs_6m_percentile": _ai_json_value(row.get("RS 6M %ile")),
+                "volume_multiple": volume,
+                "liquidity": liquidity,
+                "minimum_investor_conviction_used": final_meta.get(
+                    "minimum_investor_conviction"
+                ),
+                "liquidity_filter_used": final_meta.get("use_liquidity_filter"),
             },
         }
-    else:
-        # Give useful technical status without pretending exact membership.
-        conv_row = _ai_find_row(convergence, symbol)
-        if conv_row is not None:
-            try:
-                tech_gate = investor_quality_gate(
-                    pd.DataFrame([conv_row])
-                )
-                if not tech_gate.empty:
-                    status["final_buy_list"]["reason"] = (
-                        "The stock appears to pass the technical quality stage, "
-                        "but exact Final Buy List membership has not been verified "
-                        "in this AI session because the final fundamental shortlist "
-                        "has not been generated here."
-                    )
-            except Exception:
-                pass
 
-    # Emerging Setups is only for insufficient-history stocks.
-    dq = str(snapshot_row.get("DataQualityStatus", ""))
-    is_emerging_universe = dq.strip() == "Insufficient history"
-    if is_emerging_universe:
-        emerging = st.session_state.get("ai_emerging_working")
-        row = _ai_find_row(emerging, symbol)
-        if row is not None:
-            status["emerging_setups"] = {
-                "member": True,
-                "reason": (
-                    f"Insufficient-history stock in the Emerging lane. "
-                    f"Emerging Score: {row.get('Emerging Score')}. "
-                    f"Setup: {row.get('Setup')}."
-                ),
-                "details": {
-                    "emerging_score": _ai_json_value(row.get("Emerging Score")),
-                    "technical_score": _ai_json_value(row.get("Technical Score")),
-                    "fundamental_score": _ai_json_value(row.get("Fundamental Score")),
-                    "setup": _ai_json_value(row.get("Setup")),
-                    "rs_3m_percentile": _ai_json_value(row.get("RS3MPct")),
-                    "fundamental_coverage": _ai_json_value(row.get("Fundamental Coverage")),
-                },
-            }
-        else:
-            status["emerging_setups"] = {
-                "member": True,
-                "reason": (
-                    "This stock is in the insufficient-history universe and therefore "
-                    "belongs to the Emerging Setups research lane. Exact Emerging Score "
-                    "components are available after that page has generated its analysis."
-                ),
-                "details": {},
-            }
+    # Emerging Setups.
+    emerging_frame, _ = _ai_registered_strategy_frame(
+        "emerging_setups",
+        "ai_emerging_working",
+    )
+    row = _ai_find_row(emerging_frame, symbol)
+    if row is not None:
+        status["emerging_setups"] = {
+            "member": True,
+            "verified": True,
+            "reason": (
+                f"Currently in Emerging Setups. Setup: {row.get('Setup')}. "
+                f"Emerging Score: {row.get('Emerging Score')}."
+            ),
+            "details": {
+                "setup": _ai_json_value(row.get("Setup")),
+                "emerging_score": _ai_json_value(row.get("Emerging Score")),
+                "technical_score": _ai_json_value(row.get("Technical Score")),
+                "fundamental_score": _ai_json_value(row.get("Fundamental Score")),
+                "rs_3m_percentile": _ai_json_value(row.get("RS3MPct")),
+                "fundamental_coverage": _ai_json_value(row.get("Fundamental Coverage")),
+            },
+        }
 
-        emerging_buy = st.session_state.get("ai_emerging_buy_output")
-        row = _ai_find_row(emerging_buy, symbol)
-        if row is not None:
-            status["emerging_buy_list"] = {
-                "member": True,
-                "verified": True,
-                "reason": "The stock currently clears the strict Emerging Buy List filters.",
-                "details": {
-                    "emerging_score": _ai_json_value(row.get("Emerging Score")),
-                    "technical_score": _ai_json_value(row.get("Technical Score")),
-                    "fundamental_score": _ai_json_value(row.get("Fundamental Score")),
-                    "fundamental_coverage": _ai_json_value(row.get("Fundamental Coverage")),
-                    "setup": _ai_json_value(row.get("Setup")),
-                },
-            }
-        else:
-            status["emerging_buy_list"]["reason"] = (
-                "Exact Emerging Buy List membership has not been verified in this AI session "
-                "unless the Emerging Setups page has generated the strict shortlist."
-            )
+    # Emerging Buy List.
+    emerging_buy_frame, _ = _ai_registered_strategy_frame(
+        "emerging_buy_list",
+        "ai_emerging_buy_output",
+    )
+    row = _ai_find_row(emerging_buy_frame, symbol)
+    if row is not None:
+        status["emerging_buy_list"] = {
+            "member": True,
+            "verified": True,
+            "reason": (
+                f"Currently in the Emerging Buy List. "
+                f"Emerging Score: {row.get('Emerging Score')}."
+            ),
+            "details": {
+                "setup": _ai_json_value(row.get("Setup")),
+                "emerging_score": _ai_json_value(row.get("Emerging Score")),
+                "technical_score": _ai_json_value(row.get("Technical Score")),
+                "fundamental_score": _ai_json_value(row.get("Fundamental Score")),
+                "fundamental_coverage": _ai_json_value(row.get("Fundamental Coverage")),
+            },
+        }
 
     return status
-
 
 def _ai_stock_context(symbol):
     snapshot = st.session_state.get("snapshot")
@@ -1984,6 +1962,18 @@ Your primary job is to explain what the terminal is saying in simple language.
 Do not sound like a professional trading desk or a technical-analysis textbook.
 
 MOST IMPORTANT:
+The supplied strategy_status tells you the exact current strategy membership.
+
+If a stock is verified as a member of the Final Buy List, lead with the Final Buy List.
+Do not lead with Confluence alone, because Confluence is an earlier stage and the
+Final Buy List is the stricter shortlist.
+
+Use this hierarchy when multiple memberships are true:
+1. Final Buy List
+2. Emerging Buy List
+3. Confluence
+4. Emerging Setups
+
 The supplied strategy_status tells you whether the stock is currently in:
 - Confluence
 - Final Buy List
@@ -2072,6 +2062,7 @@ Use short sections and bullets. Keep the answer useful, clear, and retail-friend
     return answer
 
 def nifty_ai_page():
+    ai_prefilter_note()
     require_scan()
 
     snapshot = st.session_state.get("snapshot")
@@ -2130,6 +2121,21 @@ def nifty_ai_page():
         )
         st.dataframe(preview, use_container_width=True, height=520, hide_index=True)
 
+    strategy_status = context.get("strategy_status", {})
+    active_memberships = [
+        ("Final Buy List", strategy_status.get("final_buy_list", {})),
+        ("Emerging Buy List", strategy_status.get("emerging_buy_list", {})),
+        ("Confluence", strategy_status.get("confluence", {})),
+        ("Emerging Setups", strategy_status.get("emerging_setups", {})),
+    ]
+    active_memberships = [
+        (name, item) for name, item in active_memberships
+        if item.get("member") and item.get("verified")
+    ]
+    if active_memberships:
+        labels = "  •  ".join(name for name, _ in active_memberships)
+        st.success(f"Current verified strategy membership: {labels}")
+
     chat_key = f"nifty_ai_chat::{selected}"
     if chat_key not in st.session_state:
         st.session_state[chat_key] = []
@@ -2179,7 +2185,10 @@ def nifty_ai_page():
                 except Exception as exc:
                     st.error(f"AI request failed: {exc}")
 
-    st.caption(f"Model: {GEMINI_MODEL}. AI is called only when you submit a question.")
+    st.caption(
+        f"Model: {GEMINI_MODEL}. AI is called only when you submit a question. "
+        f"Strategy verification uses the {AI_STRATEGY_PREFILTER_SCORE}+ high-conviction candidate pool and does not alter the terminal's visible strategy rules."
+    )
 
 
 def regime_page():
@@ -2289,6 +2298,7 @@ with st.sidebar:
 <b>3.</b> Check the chart<br>
 <b>4.</b> Open Confluence<br>
 <b>5.</b> Open Final Buy List<br>
+<b>6.</b> Ask Nifty AI Analyst why a shortlisted stock qualified<br>
 <b>Optional.</b> Check Emerging Setups for newer stocks
 </div>
 """,
