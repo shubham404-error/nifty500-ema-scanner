@@ -830,6 +830,7 @@ def convergence_page():
     with f2: setup_filter=st.selectbox("Setup type",["All"]+sorted([x for x in df['Setup'].dropna().unique() if x!='No active setup']))
     output=df.loc[(df["ConvergenceScore"]>=min_score)&(df["Setup"]!="No active setup")].copy()
     if setup_filter!="All": output=output.loc[output["Setup"]==setup_filter]
+    st.session_state["ai_confluence_output"] = output.copy()
     cols=["Symbol","Company","Setup","Close","ConvergenceScore","TrendContinuationScore","PullbackScore","FreshMomentumScore","BreakoutScore","RS3MPct","VolumeRatio","LiquidityBucket","ATRPercent","RSI14","EMA255DistancePct"]
     output=output[cols].copy().reset_index(drop=True)
     output.insert(0,"Rank",range(1,len(output)+1))
@@ -1048,6 +1049,7 @@ def buying_list_page():
         return
 
     final.insert(0, "Rank", range(1, len(final) + 1))
+    st.session_state["ai_final_buy_output"] = final.copy()
 
     for col in [
         "P/E",
@@ -1439,6 +1441,7 @@ not a guaranteed buy signal.
         return "Early Watch"
 
     working["Setup"] = working.apply(setup_label, axis=1)
+    st.session_state["ai_emerging_working"] = working.copy()
 
     # -----------------------------
     # Controls.
@@ -1567,6 +1570,7 @@ not a guaranteed buy signal.
         ascending=False,
         na_position="last",
     )
+    st.session_state["ai_emerging_buy_output"] = buy.copy()
 
     b1, b2, b3 = st.columns(3)
     b1.metric("EMERGING BUY CANDIDATES", f"{len(buy):,}")
@@ -1725,6 +1729,150 @@ def _ai_json_value(value):
     return value
 
 
+def _ai_find_row(frame, symbol):
+    if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+        return None
+    if "Symbol" not in frame.columns:
+        return None
+    rows = frame.loc[frame["Symbol"].astype(str) == str(symbol)]
+    return rows.iloc[0] if not rows.empty else None
+
+
+def _ai_strategy_status(symbol, snapshot_row):
+    """Tell AI exactly where the stock sits in the current terminal."""
+    status = {
+        "confluence": {"member": False, "reason": None, "details": {}},
+        "final_buy_list": {
+            "member": False,
+            "verified": False,
+            "reason": None,
+            "details": {},
+        },
+        "emerging_setups": {"member": False, "reason": None, "details": {}},
+        "emerging_buy_list": {
+            "member": False,
+            "verified": False,
+            "reason": None,
+            "details": {},
+        },
+    }
+
+    # Confluence can always be verified directly from the current scan output.
+    convergence = st.session_state.get("convergence")
+    row = _ai_find_row(convergence, symbol)
+    if row is not None:
+        setup = str(row.get("Setup", "No active setup"))
+        score = pd.to_numeric(row.get("ConvergenceScore"), errors="coerce")
+        active = setup != "No active setup" and pd.notna(score)
+        status["confluence"] = {
+            "member": bool(active),
+            "reason": (
+                f"Current setup: {setup}. Confluence score: {float(score):.1f}."
+                if active else
+                "The stock does not currently have an active Confluence setup."
+            ),
+            "details": {
+                "setup": setup,
+                "confluence_score": _ai_json_value(score),
+                "trend_score": _ai_json_value(row.get("TrendContinuationScore")),
+                "pullback_score": _ai_json_value(row.get("PullbackScore")),
+                "fresh_momentum_score": _ai_json_value(row.get("FreshMomentumScore")),
+                "breakout_score": _ai_json_value(row.get("BreakoutScore")),
+            },
+        }
+
+    # Exact Final Buy List membership is available once that page has generated it.
+    final = st.session_state.get("ai_final_buy_output")
+    row = _ai_find_row(final, symbol)
+    if row is not None:
+        status["final_buy_list"] = {
+            "member": True,
+            "verified": True,
+            "reason": "The stock currently clears the Final Buy List filters.",
+            "details": {
+                "rank": _ai_json_value(row.get("Rank")),
+                "investor_conviction": _ai_json_value(row.get("Investor Conviction")),
+                "technical_quality": _ai_json_value(row.get("Technical Quality")),
+                "confluence": _ai_json_value(row.get("Confluence")),
+                "setup": _ai_json_value(row.get("Setup")),
+            },
+        }
+    else:
+        # Give useful technical status without pretending exact membership.
+        conv_row = _ai_find_row(convergence, symbol)
+        if conv_row is not None:
+            try:
+                tech_gate = investor_quality_gate(
+                    pd.DataFrame([conv_row])
+                )
+                if not tech_gate.empty:
+                    status["final_buy_list"]["reason"] = (
+                        "The stock appears to pass the technical quality stage, "
+                        "but exact Final Buy List membership has not been verified "
+                        "in this AI session because the final fundamental shortlist "
+                        "has not been generated here."
+                    )
+            except Exception:
+                pass
+
+    # Emerging Setups is only for insufficient-history stocks.
+    dq = str(snapshot_row.get("DataQualityStatus", ""))
+    is_emerging_universe = dq.strip() == "Insufficient history"
+    if is_emerging_universe:
+        emerging = st.session_state.get("ai_emerging_working")
+        row = _ai_find_row(emerging, symbol)
+        if row is not None:
+            status["emerging_setups"] = {
+                "member": True,
+                "reason": (
+                    f"Insufficient-history stock in the Emerging lane. "
+                    f"Emerging Score: {row.get('Emerging Score')}. "
+                    f"Setup: {row.get('Setup')}."
+                ),
+                "details": {
+                    "emerging_score": _ai_json_value(row.get("Emerging Score")),
+                    "technical_score": _ai_json_value(row.get("Technical Score")),
+                    "fundamental_score": _ai_json_value(row.get("Fundamental Score")),
+                    "setup": _ai_json_value(row.get("Setup")),
+                    "rs_3m_percentile": _ai_json_value(row.get("RS3MPct")),
+                    "fundamental_coverage": _ai_json_value(row.get("Fundamental Coverage")),
+                },
+            }
+        else:
+            status["emerging_setups"] = {
+                "member": True,
+                "reason": (
+                    "This stock is in the insufficient-history universe and therefore "
+                    "belongs to the Emerging Setups research lane. Exact Emerging Score "
+                    "components are available after that page has generated its analysis."
+                ),
+                "details": {},
+            }
+
+        emerging_buy = st.session_state.get("ai_emerging_buy_output")
+        row = _ai_find_row(emerging_buy, symbol)
+        if row is not None:
+            status["emerging_buy_list"] = {
+                "member": True,
+                "verified": True,
+                "reason": "The stock currently clears the strict Emerging Buy List filters.",
+                "details": {
+                    "emerging_score": _ai_json_value(row.get("Emerging Score")),
+                    "technical_score": _ai_json_value(row.get("Technical Score")),
+                    "fundamental_score": _ai_json_value(row.get("Fundamental Score")),
+                    "fundamental_coverage": _ai_json_value(row.get("Fundamental Coverage")),
+                    "setup": _ai_json_value(row.get("Setup")),
+                },
+            }
+        else:
+            status["emerging_buy_list"]["reason"] = (
+                "Exact Emerging Buy List membership has not been verified in this AI session "
+                "unless the Emerging Setups page has generated the strict shortlist."
+            )
+
+    return status
+
+
 def _ai_stock_context(symbol):
     snapshot = st.session_state.get("snapshot")
     indicators = st.session_state.get("indicators")
@@ -1746,18 +1894,71 @@ def _ai_stock_context(symbol):
             indicators["Yahoo Symbol"].astype(str) == str(yahoo_symbol)
         ].copy()
 
+    strategy_status = _ai_strategy_status(symbol, row)
+
     context = {
         "symbol": str(symbol),
         "data_date": str(row_data.get("Date", "")),
         "current_terminal_snapshot": row_data,
+        "strategy_status": strategy_status,
         "rules": {
             "scores_are_engine_output": True,
             "ai_must_not_recalculate_or_change_scores": True,
             "missing_data_must_be_called_missing": True,
+            "strategy_membership_must_come_from_strategy_status": True,
         },
     }
 
     return context, history, _ai_chart_png(history, symbol)
+
+def _ai_compact_context(context):
+    """Keep the Gemini payload small and predictable."""
+    snapshot = context.get("current_terminal_snapshot", {})
+    preferred = [
+        "Symbol", "Company", "Date", "Close", "Price", "Last Price",
+        "RSI14", "EMA9", "EMA21", "SMA20", "SMA50", "SMA200", "EMA255",
+        "RS Rank", "RS Percentile", "Volume", "AvgVolume",
+        "Liquidity", "Market Cap", "PE", "P/E", "EV/EBITDA",
+        "Revenue Growth", "Operating Margin", "Net Margin", "Debt/Equity",
+        "Fundamental Coverage", "Data Quality",
+        "Confluence Score", "Conviction Score", "Buy Score",
+        "Emerging Score", "Emerging Rank",
+    ]
+
+    compact = {}
+    lower_lookup = {str(k).lower(): k for k in snapshot.keys()}
+
+    for wanted in preferred:
+        actual = lower_lookup.get(wanted.lower())
+        if actual is not None:
+            compact[str(actual)] = snapshot[actual]
+
+    # Preserve score/setup-related fields even if their exact names differ.
+    for key, value in snapshot.items():
+        key_text = str(key).lower()
+        if any(token in key_text for token in [
+            "score", "rank", "setup", "emerging", "confluence",
+            "conviction", "growth", "margin", "debt", "coverage"
+        ]):
+            compact[str(key)] = value
+
+    return {
+        "symbol": context.get("symbol"),
+        "data_date": context.get("data_date"),
+        "strategy_status": context.get("strategy_status", {}),
+        "snapshot": compact,
+        "rules": context.get("rules", {}),
+    }
+
+
+def _ai_question_needs_chart(question):
+    q = str(question).lower()
+    chart_terms = [
+        "chart", "technical", "setup", "extended", "extension",
+        "moving average", "ema", "sma", "support", "resistance",
+        "breakout", "trend", "rsi", "price action", "pullback",
+    ]
+    return any(term in q for term in chart_terms)
 
 
 def _gemini_reply(question, context, chart_png, history):
@@ -1765,49 +1966,110 @@ def _gemini_reply(question, context, chart_png, history):
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is missing. Add it in Streamlit Secrets.")
 
-    client = genai.Client(api_key=api_key)
+    # Hard timeout prevents the Streamlit spinner from waiting indefinitely.
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=30000),
+    )
 
     conversation = [
         {"role": item["role"], "content": item["content"]}
-        for item in history[-8:]
+        for item in history[-6:]
     ]
 
     instruction = """
-You are Nifty AI Analyst inside a market-research terminal.
-Use only the supplied terminal snapshot, indicator chart, and conversation.
-The engine is the source of truth for calculations and scores.
-Do not invent data, news, prices, indicators, targets, or scores.
-Do not recalculate or modify any score.
-If data is missing, explicitly say so.
-Interpret the setup clearly and avoid personalised financial advice.
-When relevant discuss: setup, positives, risks or contradictions, and what to monitor.
+You are Nifty AI, a plain-English research assistant for retail investors.
+
+Your primary job is to explain what the terminal is saying in simple language.
+Do not sound like a professional trading desk or a technical-analysis textbook.
+
+MOST IMPORTANT:
+The supplied strategy_status tells you whether the stock is currently in:
+- Confluence
+- Final Buy List
+- Emerging Setups
+- Emerging Buy List
+
+Never guess strategy membership. State it clearly when the user asks:
+"This stock is currently in Confluence because..."
+or
+"This stock is not currently on the Final Buy List..."
+
+When explaining WHY it is on a list:
+1. Start with the list name and a one-sentence plain-English reason.
+2. Translate the actual qualifying setup and score into simple language.
+3. Give 2 to 4 concrete strengths.
+4. Give the biggest caution or risk.
+5. End with "What this means for you" in plain language.
+
+Language rules:
+- Prefer "the stock has been stronger than many others recently" over
+  "high relative strength percentile".
+- Prefer "buyers are still supporting the trend" over "bullish EMA alignment".
+- Prefer "the stock is moving with stronger-than-usual trading activity" over
+  "volume confirmation".
+- Explain RSI, moving averages, breakouts, valuation, or any jargon immediately
+  if you must use it.
+- Do not dump every metric into the answer.
+- Do not use dense indicator abbreviations unless the user specifically asks.
+- A retail investor should understand the answer without prior technical knowledge.
+
+Targets:
+- Do not invent exact price targets.
+- If the user asks "what could be the target?", explain whether the supplied
+  chart/data shows a meaningful resistance or extension area.
+- Clearly label such areas as possible technical zones, not guaranteed targets.
+
+Data integrity:
+- Use only the supplied terminal data, chart, and conversation.
+- The terminal engine is the source of truth for calculations and scores.
+- Do not invent prices, news, fundamentals, indicators, targets, or scores.
+- Do not recalculate or modify any terminal score.
+- If something is not verified, say so clearly.
+- Do not provide personalised financial advice or guarantee returns.
+
+Default answer style:
+Use short sections and bullets. Keep the answer useful, clear, and retail-friendly.
 """
 
     payload = {
-        "question": question,
-        "stock_context": context,
+        "question": str(question),
+        "stock_context": _ai_compact_context(context),
         "conversation": conversation,
     }
 
     parts = [
         types.Part.from_text(text=instruction),
         types.Part.from_text(
-            text="Terminal context:\n" + json.dumps(payload, default=str, ensure_ascii=False)
+            text="Terminal context:\n" +
+            json.dumps(payload, default=str, ensure_ascii=False)
         ),
     ]
 
-    if chart_png:
-        parts.append(types.Part.from_bytes(data=chart_png, mime_type="image/png"))
+    # Send the chart only when the question actually needs visual technical context.
+    if chart_png and _ai_question_needs_chart(question):
+        parts.append(
+            types.Part.from_bytes(data=chart_png, mime_type="image/png")
+        )
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=parts,
-    )
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=parts,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Gemini did not respond within 30 seconds or the request was rejected. "
+            f"Details: {exc}"
+        ) from exc
+
     answer = getattr(response, "text", None)
     if not answer:
-        raise RuntimeError("Gemini returned an empty response.")
-    return answer
+        raise RuntimeError(
+            "Gemini returned no usable text. Try a shorter question."
+        )
 
+    return answer
 
 def nifty_ai_page():
     require_scan()
@@ -1876,10 +2138,10 @@ def nifty_ai_page():
     st.subheader(f"Chat about {selected}")
 
     quick_prompts = [
-        ("Why this stock?", "Why is this stock showing up in the current terminal output?"),
-        ("Biggest risk", "Explain the technical setup simply and identify the biggest risk."),
-        ("Is it extended?", "Is the current setup extended or reasonably positioned based on the supplied chart and indicators?"),
-        ("Strengths & risks", "Give me the key positives, contradictions, and what to monitor next."),
+        ("Why is it here?", "Tell me exactly which current list or strategy this stock belongs to and explain in simple language why it qualified."),
+        ("What does it mean?", "Explain what the current result means for a retail investor. Keep it simple and avoid technical jargon."),
+        ("Biggest risk", "What is the biggest reason to be careful with this stock right now? Explain simply."),
+        ("What next?", "What should a retail investor monitor next before becoming more confident about this setup?"),
     ]
 
     selected_quick = None
@@ -1908,7 +2170,7 @@ def nifty_ai_page():
                         prompt,
                         context,
                         chart_png,
-                        st.session_state[chat_key],
+                        st.session_state[chat_key][:-1],
                     )
                     st.markdown(answer)
                     st.session_state[chat_key].append(
