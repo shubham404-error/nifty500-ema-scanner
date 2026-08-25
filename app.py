@@ -385,16 +385,12 @@ def _ai_avatar_source():
 
 
 def render_sidebar_brand():
-    if _wordmark_exists():
-        st.image(str(APP_WORDMARK_PATH), use_container_width=True)
-        st.caption("Research terminal")
-        return
-
+    """Compact top-of-sidebar brand lockup: icon + terminal name."""
     logo_col, text_col = st.columns([0.24, 1], gap="small")
 
     with logo_col:
         if _logo_exists():
-            st.image(str(APP_LOGO_PATH), width=42)
+            st.image(str(APP_LOGO_PATH), width=44)
         else:
             st.markdown("### 📈")
 
