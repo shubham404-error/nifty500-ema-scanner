@@ -6,7 +6,7 @@ from pathlib import Path
 import io
 import json
 import hashlib
-import re
+
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
@@ -364,6 +364,34 @@ hr {
     [data-testid="stSidebar"] {
         width: min(86vw, 360px);
     }
+}
+
+
+.terminal-ownership {
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 10px;
+    letter-spacing: 0.25px;
+    line-height: 1.45;
+}
+.terminal-footer {
+    margin-top: 42px;
+    padding: 18px 0 8px;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.65;
+}
+.terminal-footer .footer-owner {
+    color: var(--text);
+    font-weight: 600;
+}
+.sidebar-ownership {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.55;
 }
 
 </style>
@@ -2109,6 +2137,21 @@ def _ai_question_needs_chart(question):
 
 
 
+
+def render_terminal_footer():
+    """Persistent ownership attribution for the terminal."""
+    st.markdown(
+        """
+<div class="terminal-footer">
+    <div class="footer-owner">© CapitalSense Advisors. All rights reserved.</div>
+    <div>Nifty Total Market Terminal is a proprietary research application.</div>
+    <div>Run by Shubham Tejani</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def _ai_consume_call():
     """Hard per-session guard for the free-tier AI integration."""
     count = int(st.session_state.get("ai_call_count", 0))
@@ -2766,3 +2809,5 @@ with st.sidebar:
     )
 
 pg.run()
+
+render_terminal_footer()
