@@ -21,7 +21,7 @@ from plotly.subplots import make_subplots
 # -------------------------------------------------------------------
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 AI_STRATEGY_PREFILTER_SCORE = 75
-AI_DEFAULT_FINAL_BUY_CONVICTION = 78
+AI_DEFAULT_FINAL_BUY_CONVICTION = 75
 AI_DEFAULT_FINAL_BUY_LIQUIDITY = True
 AI_FUNDAMENTAL_FETCH_LIMIT = 25
 AI_LIST_REVIEW_LIMIT = 20
@@ -2663,10 +2663,18 @@ def nifty_ai_page():
     with right:
         st.subheader("Current terminal snapshot")
         st.caption("Yahoo Finance fundamentals are fetched on demand for questions about valuation, business quality, growth, profitability, debt, cash flow, or longer-term investing.")
+        # Streamlit/PyArrow requires a consistent type within each DataFrame column.
+        # Terminal snapshot values can legitimately mix strings, ints, floats and bools.
         preview = pd.DataFrame(
             {
-                "Metric": list(context["current_terminal_snapshot"].keys()),
-                "Value": list(context["current_terminal_snapshot"].values()),
+                "Metric": [
+                    str(key)
+                    for key in context["current_terminal_snapshot"].keys()
+                ],
+                "Value": [
+                    "N/A" if pd.isna(value) else str(value)
+                    for value in context["current_terminal_snapshot"].values()
+                ],
             }
         )
         st.dataframe(preview, use_container_width=True, height=520, hide_index=True)
